@@ -49,13 +49,15 @@ public record SecurityProperties(
     /**
      * 密码策略。
      *
+     * <p>没有"长度上限"配置项：上限由 BCrypt 的 72 字节硬约束决定，写在
+     * {@link ai.camphub.identity.domain.PasswordPolicy#BCRYPT_MAX_BYTES} 里。
+     * 配置一个与算法约束不一致的软上限，只会让人误以为它是有效的。
+     *
      * @param minLength 最短长度。取 10 而不是 8：长度是抵抗离线爆破最有效的单一变量，
      *                  而强制"大小写+符号"的复杂组合会把人推向 {@code Passw0rd!} 这类可预测模式
      *                  （NIST SP 800-63B 已明确不推荐强制组合）
-     * @param maxLength 最长长度。必须在哈希前就限制：BCrypt 只取前 72 字节，
-     *                  超长输入既无效又会成为 CPU 消耗攻击的载体
      */
-    public record Password(int minLength, int maxLength) {
+    public record Password(int minLength) {
     }
 
     /**

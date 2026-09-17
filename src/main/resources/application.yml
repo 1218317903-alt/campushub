@@ -99,9 +99,9 @@ app:
       # 30 天：长有效期由"有状态 + 可轮换 + 可撤销"来担保，而不是靠短
       refresh-token-ttl: 30d
     password:
+      # 只配最短长度。上限不在此配置：BCrypt 只使用前 72 字节，超长部分被静默丢弃
+      # 是真实的强度损失，因此该约束写死在 PasswordPolicy 中并以"拒绝"而非"截断"处理。
       min-length: 10
-      # BCrypt 只使用前 72 字节，超过部分无效；在此显式设上限，避免拿超长输入消耗 CPU
-      max-length: 128
     login:
       max-failures: 5
       lock-duration: 15m
