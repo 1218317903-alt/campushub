@@ -3,10 +3,12 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="ai.camphub.identity.infrastructure.RefreshTokenMapper">
 
+    <!-- javaType 中的下划线不能去掉：MyBatis 别名表里 `_long` 是原始类型 long，
+         而 `long` 是包装类型 Long。rotated_from 可空，因此刻意用 java.lang.Long 而非 _long。 -->
     <resultMap id="RefreshTokenMap" type="ai.camphub.identity.domain.RefreshTokenRecord">
         <constructor>
-            <idArg column="id" javaType="long"/>
-            <arg column="user_id" javaType="long"/>
+            <idArg column="id" javaType="_long"/>
+            <arg column="user_id" javaType="_long"/>
             <arg column="token_hash" javaType="java.lang.String"/>
             <arg column="device" javaType="java.lang.String"/>
             <arg column="expires_at" javaType="java.time.Instant"/>
@@ -42,6 +44,16 @@
         SELECT <include refid="tokenColumns"/>
         FROM refresh_token
         WHERE id = #{id}
+    </select>
+
+    <!-- 取最近一条：一次性令牌被重复使用时，可能存在多条后继（例如并发竞态下各开了一条链）。
+         按 id 倒序取最新的一条来判断"这是不是刚刚发生的正常并发"。 -->
+    <select id="findLatestByRotatedFrom" resultMap="RefreshTokenMap">
+        SELECT <include refid="tokenColumns"/>
+        FROM refresh_token
+        WHERE rotated_from = #{rotatedFrom}
+        ORDER BY id DESC
+        LIMIT 1
     </select>
 
     <!-- 只要"仍有效"的会话：已撤销的与已过期的都不该出现在设备列表里，

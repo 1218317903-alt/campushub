@@ -4,10 +4,18 @@
 <mapper namespace="ai.camphub.identity.infrastructure.UserMapper">
 
     <!-- 显式声明构造器映射，不依赖全局 mapUnderscoreToCamelCase：
-         全局开关一旦被改动，这类隐式依赖会静默失效。 -->
+         全局开关一旦被改动，这类隐式依赖会静默失效。
+
+         ⚠️ 类型别名陷阱（踩过一次，务必保留这里的下划线）：
+         MyBatis 的别名注册表里，**不带下划线的是包装类型** ——
+         `long` 解析为 java.lang.Long、`int` 解析为 java.lang.Integer，
+         只有 `_long` / `_int` 才是原始类型。
+         而 record 的规范构造器（canonical constructor）是按**原始类型**签名的，
+         因此写成 javaType="long" 时 MyBatis 会去找 User(Long, ...) 这个不存在的构造器，
+         报 NoSuchMethodException —— 而且只在**真正查询**时才暴露，编译期毫无提示。 -->
     <resultMap id="UserMap" type="ai.camphub.identity.domain.User">
         <constructor>
-            <idArg column="id" javaType="long"/>
+            <idArg column="id" javaType="_long"/>
             <arg column="public_id" javaType="java.lang.String"/>
             <arg column="username" javaType="java.lang.String"/>
             <arg column="email" javaType="java.lang.String"/>
@@ -17,7 +25,7 @@
             <!-- 状态列的字符串与枚举名一一对应，用 MyBatis 默认的 EnumTypeHandler 即可；
                  遇到未登记的值会抛异常而不是静默落回某个默认状态，这是刻意的。 -->
             <arg column="status" javaType="ai.camphub.identity.domain.UserStatus"/>
-            <arg column="token_version" javaType="int"/>
+            <arg column="token_version" javaType="_int"/>
             <arg column="created_at" javaType="java.time.Instant"/>
             <arg column="updated_at" javaType="java.time.Instant"/>
         </constructor>
