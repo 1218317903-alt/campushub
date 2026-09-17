@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ==========================================================================
+  CampusHub AI — 后端工程（Phase 01）
+  ==========================================================================
+  版本依据（全部经 Maven Central 实测，见 docs/11-开发环境.md 6bis 节与
+  00-工程规约.md 3.4 节，不得凭记忆修改）：
+
+    Spring Boot        4.1.1   [当前维护主线，3.5 线最后补丁 2026-06-25，已在末段]
+    Spring Framework   7.0.9   [由 Boot 4.1.1 管理]
+    Spring Security    7.1.1   [由 Boot 4.1.1 管理，Phase 02 使用]
+    Web Starter        spring-boot-starter-webmvc
+                                Boot 4 中 spring-boot-starter-web 已弃用，
+                                官方 description 明确 deprecated in favor of
+                                spring-boot-starter-webmvc
+    数据访问           官方 MyBatis 4.1.0
+                                不用 MyBatis-Plus：其仅提供
+                                mybatis-plus-spring-boot3-starter，BOM 导入
+                                spring-boot-dependencies:3.5.9，无 Boot 4 支持
+    Flyway             12.4.0  [由 Boot 4.1.1 管理，需 flyway-core + flyway-mysql]
+    MySQL 驱动         9.7.0   [由 Boot 4.1.1 管理]
+    Testcontainers     2.0.5   [由 Boot 4.1.1 管理]
+                                构件名已变更为 testcontainers-mysql /
+                                testcontainers-junit-jupiter（2.x 命名）
+    API 文档           springdoc-openapi 3.1.1 [Boot 4 线，2.9.1 属 Boot 3.5 线]
+    ArchUnit           1.5.0   [不在 Boot 管理范围内，显式指定]
+
+  模块形态：单 Maven 模块 + 包级模块边界（ArchUnit 强制）。
+            见 docs/adr/0001-modular-monolith.md 的决策与拆分触发条件。
+  ==========================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.1</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>ai.camphub</groupId>
+  <artifactId>camphub</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>CampusHub AI</name>
+  <description>面向高校学生及年轻学习者的 AI 知识协作、内容社区与智能信息发现平台</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <!-- 非 Boot 管理范围的依赖版本集中在此，禁止散落各处 -->
+    <mybatis-spring-boot.version>4.1.0</mybatis-spring-boot.version>
+    <springdoc.version>3.1.1</springdoc.version>
+    <archunit.version>1.5.0</archunit.version>
+  </properties>
+
+  <dependencies>
+
+    <!-- ========== Web ========== -->
+    <!-- 注意：Boot 4 使用 webmvc，不是已弃用的 web -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
+    </dependency>
+
+    <!-- ========== 参数校验 ========== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- ========== 健康检查 / 指标端点 ========== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- ========== 数据访问 ========== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.mybatis.spring.boot</groupId>
+      <artifactId>mybatis-spring-boot-starter</artifactId>
+      <version>${mybatis-spring-boot.version}</version>
+    </dependency>
+
+    <!-- ========== 数据库迁移 ========== -->
+    <!--
+      为什么必须显式引入 spring-boot-starter-flyway：
+      Boot 4 把 Flyway 的自动配置从 spring-boot-autoconfigure 拆到了独立构件
+      spring-boot-flyway / spring-boot-starter-flyway。
+      只放 flyway-core 而不放这个 starter 时，Flyway 的 auto-configuration 不会被加载，
+      结果是**迁移静默不执行**：应用能正常启动、接口能返回，但表根本不存在。
+      实测证据：集成测试报 "Table 'camphub.app_metadata' doesn't exist"，
+      且 spring-boot-autoconfigure:4.1.1 中已不存在任何 flyway 相关类。
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <!-- MySQL 方言支持单独成构件，缺了它 Flyway 无法识别 MySQL -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-mysql</artifactId>
+    </dependency>
+
+    <!-- ========== MySQL 驱动（版本由 Boot 管理） ========== -->
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- ========== API 文档 ========== -->
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>${springdoc.version}</version>
+    </dependency>
+
+    <!-- ======================== 测试 ======================== -->
+
+    <!-- JUnit 5 / AssertJ / Mockito -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Boot 4 拆分出的 WebMvc 测试支持（@WebMvcTest / MockMvc） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Testcontainers：集成测试用真实 MySQL，不用 H2 顶替 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-mysql</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- 架构边界测试：把「模块边界」从口头约定变成构建时断言 -->
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <version>${archunit.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+
+      <!--
+        Testcontainers 环境适配说明：
+        本机 Docker Hub 不可达（见 docs/11-开发环境.md 7.2 节），因此 ryuk 镜像
+        通过 src/test/resources/testcontainers.properties 指向本地已有的 tag，
+        避免测试运行时尝试联网拉取。MySQL 镜像固定为 mysql:8.4（本机已就绪），
+        在测试基类中以 withImage 指定。
+      -->
+
+      <!-- 集成测试（*IT）与单元测试（*Test）分阶段执行：
+             mvn test    只跑单元测试
+             mvn verify  先单元测试，再集成测试 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+  </build>
+
+</project>
