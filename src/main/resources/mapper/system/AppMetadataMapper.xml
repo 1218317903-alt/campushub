@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  app_metadata 表映射。
+  namespace 必须是 Mapper 接口的完整类名，MyBatis 靠它把接口方法与 SQL 绑定。
+-->
+<mapper namespace="ai.camphub.system.infrastructure.AppMetadataMapper">
+
+    <!-- 列名与 Java 字段名不同（meta_key -> metaKey）时显式声明映射，
+         不依赖全局 mapUnderscoreToCamelCase —— 全局开关一旦被改动，
+         这类隐式依赖会静默失效。 -->
+    <resultMap id="AppMetadataMap" type="ai.camphub.system.domain.AppMetadata">
+        <constructor>
+            <arg column="meta_key" javaType="java.lang.String"/>
+            <arg column="meta_value" javaType="java.lang.String"/>
+        </constructor>
+    </resultMap>
+
+    <select id="findByKey" resultMap="AppMetadataMap">
+        SELECT meta_key, meta_value
+        FROM app_metadata
+        WHERE meta_key = #{metaKey}
+    </select>
+
+</mapper>
