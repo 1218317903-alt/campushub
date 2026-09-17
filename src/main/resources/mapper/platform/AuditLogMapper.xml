@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  audit_log 表映射。
+
+  本表只写不读（本阶段）。审计日志是**追加型**数据：
+  没有任何业务路径会去修改或删除历史记录，因此这里没有 update/delete。
+-->
+<mapper namespace="ai.camphub.platform.audit.infrastructure.AuditLogMapper">
+
+    <insert id="insert">
+        INSERT INTO audit_log (actor_user_id,
+                               action,
+                               target_type,
+                               target_id,
+                               result,
+                               ip,
+                               user_agent,
+                               detail_json,
+                               trace_id)
+        VALUES (#{entry.actorUserId},
+                #{entry.action},
+                #{entry.targetType},
+                #{entry.targetId},
+                #{entry.result},
+                #{entry.ip},
+                #{entry.userAgent},
+                #{entry.detailJson},
+                #{entry.traceId})
+    </insert>
+
+</mapper>

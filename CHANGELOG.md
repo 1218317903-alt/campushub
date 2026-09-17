@@ -18,6 +18,156 @@ _尚无未发布变更。_
 
 ---
 
+## [0.2.0] - 2026-09-17
+
+Phase 02 — Identity & Security Foundation。引入完整的账号体系与鉴权能力：
+注册、登录、登出、访问令牌 + 刷新令牌、令牌撤销、密码策略、基础限流、审计基础。
+
+> **这是一次破坏性变更**：引入 Spring Security 并采用"默认拒绝"后，
+> 所有此前公开的端点变为需要认证（`/api/v1/system/info`、`/actuator/health`、
+> API 文档除外）。因此按 MINOR 递增。
+
+### Added
+
+- **`V2__identity.sql` 迁移**：8 张表 —— `user` · `user_credential` · `role` ·
+  `permission` · `user_role` · `role_permission` · `refresh_token` · `audit_log`。
+  要点：
+  - `user_credential` 与 `user` 分表。凭据是**读取频率最低、敏感度最高**的字段，
+    分表后任何"列出用户/搜索用户"的查询天然拿不到 `password_hash`，
+    不必依赖每个开发者记得在 SELECT 里排除它。
+  - 排序规则刻意选 `utf8mb4_0900_ai_ci`（大小写不敏感）。若区分大小写，
+    攻击者就能注册 "Adm1n" 冒充 "adm1n"。
+  - `refresh_token.token_hash` 只存 SHA-256。它是 30 天有效的长期凭据、等价于密码，
+    库被读走时哈希不可逆；用 SHA-256 而非 BCrypt 是因为令牌本身是 256 bit 随机值
+    （没有"弱口令"问题），而每次刷新都要按哈希建索引查找，慢哈希会把刷新接口变成 CPU 瓶颈。
+  - `audit_log.actor_user_id` **不加外键**。审计的价值在于"账号删除后仍查得到谁做过什么"，
+    外键（且是 CASCADE）会让删除用户连带抹掉审计痕迹 —— 那正好删掉了最该保留的部分。
+  - 只种 `USER` 角色。**不预置** MODERATOR / ADMIN 与权限点：本阶段没有任何接口检查它们，
+    提前种下的结果是表里躺着一批"看起来有权限体系、实际没人检查"的行，
+    比没有更危险。
+- **身份领域模型**：`User` · `UserCredential` · `UserStatus` · `Role` · `UserPrincipal` ·
+  `RefreshTokenRecord` · `PasswordPolicy` · `TokenHasher` · `RandomValues` · `DeviceLabel`。
+  除 `UserPrincipal` 的权限缓存取舍外，全部不依赖 Spring（由 ArchUnit 断言）。
+- **鉴权链**：`JwtAuthenticationFilter`（签名/时间 → 账号状态 → 令牌世代号）·
+  `JwtTokenService`（HS256）· `RestAuthenticationEntryPoint` · `RestAccessDeniedHandler` ·
+  `UserPrincipalLoader`（每请求回库装配权限）· `SecurityConfig`。
+- **应用服务**：`AuthService` · `AccountService` · `SessionService` ·
+  `RefreshTokenService` · `RefreshTokenLeakHandler` · `LoginAttemptService` ·
+  `AuthRateLimiter`。
+- **HTTP 接口**（`/api/v1`）：
+
+  | 方法 | 路径 | 说明 |
+  |---|---|---|
+  | POST | `/auth/register` | 注册并直接返回令牌对 |
+  | POST | `/auth/login` | 用户名或邮箱 + 密码 |
+  | POST | `/auth/refresh` | 换取新令牌对（轮换，旧令牌立即失效） |
+  | POST | `/auth/logout` | 撤销当前会话（幂等） |
+  | POST | `/auth/logout-all` | 撤销全部会话并使访问令牌立即失效 |
+  | GET | `/users/me` | 本人资料 |
+  | PATCH | `/users/me` | 修改资料 |
+  | POST | `/users/me/password` | 修改密码 |
+  | GET | `/users/me/sessions` | 列出登录设备 |
+  | DELETE | `/users/me/sessions/{id}` | 下线指定设备 |
+
+- **审计基础**（`platform/audit`）：`AuditService` 以 `REQUIRES_NEW` 独立事务写入，
+  覆盖 `AUTH_REGISTER` · `AUTH_LOGIN_SUCCESS` · `AUTH_LOGIN_FAILURE` · `AUTH_LOGOUT` ·
+  `AUTH_LOGOUT_ALL` · `AUTH_TOKEN_REFRESH` · `AUTH_TOKEN_REPLAY_DETECTED` ·
+  `AUTH_PASSWORD_CHANGE` · `USER_PROFILE_UPDATE` · `SESSION_REVOKE`。
+- **错误码扩展**：`40100`~`40104`（未认证 / 过期 / 无效 / 凭据错误 / 已撤销）、
+  `40300`~`40301`、`42900`、`40010`、`40900`。`429` 响应带 `Retry-After`。
+- **测试**（本阶段准出要求）：47 条单元测试 + 41 条集成测试（真实 HTTP + 真实 MySQL）。
+
+### Security
+
+- **防账号枚举**：登录时"账号不存在"与"密码错误"返回**完全相同**的状态码、
+  错误码与文案；并且账号不存在时仍对预置哑哈希执行一次 BCrypt 校验，
+  让两条路径的**响应耗时**也接近。否则拿一份邮箱列表逐条试，就能筛出平台上有哪些账号。
+- **账号状态检查放在口令校验之后**：锁定/停用的提示对真实用户很重要，
+  但对攻击者同样是信息。放在口令校验之后，只有已经知道口令的人才会看到它。
+- **令牌世代号（`user.token_version`）实现"立即撤销"**：访问令牌是无状态的，
+  签发后无法收回。登出全部设备 / 改密 / 踢下线时递增世代号，鉴权过滤器逐请求比对，
+  使未过期的访问令牌也立即失效。代价是每次鉴权回库一次（换取"权限变更立即生效"）。
+- **刷新令牌轮换 + 重放检测**：一个 30 天有效、可不断换新的凭据若不轮换，
+  一旦泄露就是 30 天的稳定后门，且服务端**无法察觉**泄露已发生。轮换之后，
+  链中间节点再次出现即说明有人持有旧副本 —— 泄露从"不可见"变成"可判定事件"。
+  处置为撤销该用户全部会话并推进世代号。
+  宽限窗口（5 秒）用于区分"多标签页并发刷新"与"确凿的泄露"。
+- **密码策略遵循 NIST SP 800-63B**：要求长度（≥ 10）与常见弱密码表命中，
+  **不强制字符类别组合**（强制组合会把用户推向 `Passw0rd!` 这类可预测模式）。
+  另拒绝超过 BCrypt 72 字节上限的密码 —— 而不是放任其被静默截断
+  （那意味着两个不同的长密码可能哈希成同一个值）。
+- **越权从接口形状上消除**：账号自助接口的路径中只有 `me`，
+  不出现"要操作哪个用户"这个参数。因此不存在"把别人的 ID 填进去"的攻击面，
+  也就不依赖每个开发者都记得加归属判断。会话下线是唯一需指定 ID 的接口，
+  那里显式校验归属，且**不属于自己的会话一律返回 404 而非 403** ——
+  403 等于承认"这个会话确实存在，只是不归你"。
+- **响应字段按"谁在看"裁剪**：资料响应不含 `email` / `status` / 自增 `id` / `tokenVersion`。
+- **CSRF 关闭是有前提的**：凭据只经 `Authorization` 头传递，不依赖浏览器自动携带的 Cookie。
+  代码注释中已标明：**若将来把刷新令牌改放进 Cookie，这一条必须同步改回来**。
+- **来源 IP 默认不信任 `X-Forwarded-For` / `X-Real-IP`**：这两个头由客户端完全控制，
+  无可信反向代理时采信它们会让"按 IP 限流"被逐请求绕过、并往审计日志写入伪造来源。
+- **JWT 密钥无默认值**：`app.security.jwt.secret` 为空或短于 32 字节时**启动即失败**。
+  一个"能启动但人人可猜"的默认密钥，等于把所有用户的账号交给第一个读到源码的人。
+
+### Changed
+
+- **全部端点默认需要认证**（`anyRequest().authenticated()`）。公开端点收敛为：
+  `auth/register|login|refresh|logout`、`GET system/info`、`actuator/health|info`、
+  swagger、`/error`。默认拒绝而非默认放行，是这份清单能长期安全的前提 ——
+  新增接口时忘记加规则，结果是"访问不了"（立刻被发现），而不是"裸奔"（很久后才发现）。
+- **未认证请求一律 401，不再先回答"这个路径存在吗"**。
+  因此对不存在的路径得到的是 401 而不是 404。这是期望的行为：
+  若未认证调用方能靠 404/405 与 401 的差别区分路径是否存在，就等于提供了一个免费的接口枚举器。
+  `ErrorContractIT` 相应拆成两组（带令牌验证 404/405 契约，不带令牌验证"先认证"规则）。
+- `AuthRateLimiter` 从 `identity.infrastructure.security` 移至 `identity.app`。
+  它被 Controller 直接调用，而架构规则禁止 API 层依赖 infrastructure。
+  更根本的理由是限流属**业务策略**而非外部系统适配，"用内存还是 Redis"是实现细节。
+
+### Fixed
+
+- **MyBatis 构造器映射把 `long` / `int` 解析成包装类型**：三个 resultMap 写的是
+  `javaType="long"`，而 MyBatis 别名表中**不带下划线的是包装类型**
+  （`long` → `java.lang.Long`），只有 `_long` / `_int` 才是原始类型。
+  record 的规范构造器按原始类型签名，于是查询时抛 `NoSuchMethodException`
+  并以 500 暴露 —— 编译期毫无提示。已改用 `_long` / `_int` 并在 XML 中写明该陷阱。
+- **令牌泄露处置被事务回滚吞掉**：检测到刷新令牌重放后的"撤销全部会话 + 推进世代号"
+  原先写在 `@Transactional` 的 `rotate()` 内，随后的业务异常会回滚整个事务，
+  两笔写入全部消失 —— 客户端收到"已登出全部设备"，数据库却什么都没变，攻击者令牌继续有效。
+  更糟的是审计（`REQUIRES_NEW`，不受回滚影响）已写下"处置成功"，
+  事后排查会得到与事实相反的结论。已抽为 `RefreshTokenLeakHandler` 以 `REQUIRES_NEW` 独立提交。
+- **注册时不传 `device` 返回 500**：`device` 在接口上可选（`@Size(max=64)`，允许 null），
+  而 `refresh_token.device` 是 `NOT NULL`。此前只有令牌轮换路径做了规范化，
+  注册与登录路径没有，于是"不传设备"这一完全合法的操作以
+  `Column 'device' cannot be null` 变成服务器错误。已抽出 `DeviceLabel`
+  作为唯一的规范化实现，并在 `SessionService`（三条路径的共同入口）统一调用。
+- **登出审计重复记账**：`revoke` 的 `WHERE` 带 `revoked_at IS NULL`，
+  重复登出影响 0 行，但审计此前无条件写入。已改为仅在真正撤销了会话时记录 ——
+  否则按动作聚合出的"登出次数"不再等于"被撤销的会话数"。
+- **弱密码可被首尾空白绕过**：`"  password123  "` 此前能通过弱密码检查，
+  而攻击字典的第一条规则正是"在候选词前后补上常见字符"。
+  弱密码表与账号相关性比对改用去除首尾空白后的形式；同时**显式拒绝**首尾空白 ——
+  它在视觉上不可见却会改变哈希结果，会制造出"用户认为密码是 A、实际设成了 B"的支持困局。
+- `ClientIpResolver` 注释中的配置键名错误（写作 `app.security.trust-forwarded-headers`，
+  实际前缀为 `app.request`）。
+
+### Known Issues
+
+以下为**已知并已记录**的限制，不是遗漏：
+
+- **限流为单实例内存实现**：多实例部署时每个实例各自计数，实际额度是"配置值 × 实例数"；
+  进程重启即清零；固定窗口在跨窗口边界时短时峰值可达配置值的两倍。
+  这是本阶段明确不引入 Redis 的代价，接 Redis 是 Phase 09 的任务（届时先压测确认它确实是瓶颈）。
+- **令牌撤销延迟**：不做"访问令牌黑名单"，世代号是账号级的粗粒度撤销 ——
+  撤销单个设备会使该账号所有访问令牌失效（用户体验上的取舍，换来实现简单且无额外存储）。
+- **无 MFA / 无第三方登录 / 无邮箱验证**：不在 Phase 02 范围内。
+- **审计只写不查**：`audit_log` 目前仅写入，没有查询接口与后台展示（Phase 10）。
+- **验证码缺失**：限流之外没有验证码，持续分布式撞库仍可能缓慢推进。
+- **公开端点清单不含 `/auth/logout-all`**：它需要有效访问令牌，这是有意的 ——
+  `/auth/logout` 之所以公开是因为"持有刷新令牌即授权"，而"登出全部设备"是账号级操作，
+  必须由已认证的身份发起。
+
+---
+
 ## [0.1.1] - 2026-09-17
 
 `v0.1.0` 之后的收尾批次：补上持续集成、修正一处仓库洁净度问题、
