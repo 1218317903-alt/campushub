@@ -46,8 +46,8 @@
   <!-- 版本号是**单一来源**：application.yml 通过资源过滤 @project.version@ 引用它，
        /api/v1/system/info 也由此取数。改动这里即改动全项目对外报出的版本，
        不允许在 yml、前端或代码里再写一份。
-       0.3.0-SNAPSHOT = 当前正在开发的目标版本（v0.2.0 已发布）。 -->
-  <version>0.3.0-SNAPSHOT</version>
+       发布态不带 -SNAPSHOT；下一次开发的开发态再改为下一版本的 -SNAPSHOT。 -->
+  <version>0.3.0</version>
   <packaging>jar</packaging>
 
   <name>CampusHub AI</name>
