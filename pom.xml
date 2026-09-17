@@ -123,6 +123,28 @@
       <scope>runtime</scope>
     </dependency>
 
+    <!-- ========== 认证与授权（Phase 02） ========== -->
+    <!--
+      只引 spring-security-oauth2-jose，不引 spring-boot-starter-oauth2-resource-server。
+      理由：
+        1. resource-server starter 面向「校验由外部授权服务器签发的 Token」这一场景，
+           会带来 BearerTokenAuthenticationFilter、JwtAuthenticationConverter 等一整套
+           约定，以及自己的自动配置分支。本项目的令牌由自己签发，且必须在签名校验之外
+           再查一次 user.token_version（撤销语义），所以鉴权过滤器本来就要自己写 ——
+           引 starter 只会多出两条并行、只有一条真正生效的链路。
+        2. 本模块实际需要的只有 NimbusJwtEncoder / NimbusJwtDecoder / JwtClaimsSet，
+           它们都在 spring-security-oauth2-jose 里，nimbus-jose-jwt 随之传入。
+      版本不显式声明：spring-security-* 全部由 Boot 4.1.1 导入的 spring-security-bom 管理。
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-oauth2-jose</artifactId>
+    </dependency>
+
     <!-- ========== API 文档 ========== -->
     <dependency>
       <groupId>org.springdoc</groupId>

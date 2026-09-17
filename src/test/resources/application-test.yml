@@ -14,6 +14,14 @@ spring:
     # 测试库同样执行真实迁移，不跳过 —— 否则迁移脚本的错误要在部署时才发现
     enabled: true
 
+app:
+  security:
+    jwt:
+      # 测试专用密钥，**只存在于测试资源中**，真实环境的密钥必须由 APP_JWT_SECRET 注入。
+      # 写死在测试里是刻意的：测试必须可重复、无外部依赖，且它保护的是一分钟就销毁的容器库。
+      # 长度 ≥ 32 字节是 HS256 的硬要求（256 bit）。
+      secret: test-only-jwt-secret-for-camphub-integration-tests-0123456789
+
 logging:
   level:
     root: WARN
