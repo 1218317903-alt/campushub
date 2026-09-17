@@ -182,11 +182,14 @@
       </plugin>
 
       <!--
-        Testcontainers 环境适配说明：
-        本机 Docker Hub 不可达（见 docs/11-开发环境.md 7.2 节），因此 ryuk 镜像
-        通过 src/test/resources/testcontainers.properties 指向本地已有的 tag，
-        避免测试运行时尝试联网拉取。MySQL 镜像固定为 mysql:8.4（本机已就绪），
-        在测试基类中以 withImage 指定。
+        Testcontainers 说明：
+        仓库内**不含**任何 testcontainers.properties —— 那是环境适配，不是项目配置，
+        写进仓库会把所有克隆者钉死在某个 ryuk 版本上。
+        本机（Docker Hub 不可达）把 ryuk 指向本地 tag，做法是用户级
+        ~/.testcontainers.properties（见 docs/11-开发环境.md 7.2 节）。
+        能直连 Docker Hub 的机器什么都不用配。
+        MySQL 镜像固定为 mysql:8.4，在测试基类中以 withImage 指定（这是项目决定，
+        因为它影响测试行为，与运行环境无关）。
       -->
 
       <!-- 集成测试（*IT）与单元测试（*Test）分阶段执行：
