@@ -24,6 +24,21 @@ logging:
     # MyBatis 在 mapper 所在包的 logger 下输出 SQL 与参数，
     # 把 mapper 包调到 DEBUG 才能看到真实 SQL（Phase 09 定位慢查询的前提）
     ai.camphub.system.infrastructure: DEBUG
+    ai.camphub.community.infrastructure: DEBUG
+    ai.camphub.identity.infrastructure: DEBUG
+
+# ---------------------------------------------------------------------------
+# 合成演示数据（Synthetic Demo Seed）：**只在本地 profile 打开**
+# ---------------------------------------------------------------------------
+# 目标：按 README 从零部署后，第一次打开首页就能看到完整的分类、帖子、评论与互动，
+# 而不是一个空壳。开关的意义在于"只有明确选择了开发环境，才会写这批数据"。
+#
+# 注意路径是 app.demo-seed，**不是** app.community.demo-seed ——
+# 这个生成器要建 identity 的演示账号、也要建 community 的内容，
+# 因此它不属于任何一个业务模块（理由见 application.yml 中该块的注释）。
+app:
+  demo-seed:
+    enabled: true
 
 springdoc:
   # 本地开启文档交互界面；生产 profile 应关闭（见 application-prod.yml 规划）

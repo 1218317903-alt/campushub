@@ -1,24 +1,98 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { computed, onMounted } from 'vue'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+
+import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 /**
- * 应用外壳（顶栏 + 内容区）。
+ * 应用外壳（顶栏 + 内容区 + 页脚）。
  *
- * Phase 01 只放导航骨架。导航项刻意只列「已经存在」的页面：
- * 提前挂上一排点不动的入口，会让人误判项目进度。
+ * <h2>导航项只列「已经存在」的页面</h2>
+ * 提前挂上一排点不动的入口，会让人误判项目进度。因此这里只放首页与社区，
+ * Workspace / Discover / AI 各自 Phase 上线时再追加。
+ *
+ * <h2>版本号取自后端，不写死在页面上</h2>
+ * 顶栏曾经硬编码过一个阶段徽标，结果是社区上线后它还停在上一阶段 ——
+ * 一个只有人工记得去改的常量，迟早会变成错误信息。现在版本从
+ * `/api/v1/system/info` 读取（{@code app_metadata} 表是它的真值来源），
+ * 页面只是它的投影，不可能与制品漂移。
  */
 const route = useRoute()
+const router = useRouter()
+const app = useAppStore()
+const auth = useAuthStore()
 
 interface NavItem {
   name: string
   label: string
+  /** 用于比较的路径前缀；'/' 表示精确匹配首页 */
   to: string
 }
 
-const navItems: NavItem[] = [{ name: 'home', label: '概览', to: '/' }]
+const navItems: NavItem[] = [
+  { name: 'home', label: '概览', to: '/' },
+  { name: 'community', label: '校园社区', to: '/community' },
+  { name: 'my-favorites', label: '我的收藏', to: '/community/favorites' },
+]
 
-const activeName = computed(() => (typeof route.name === 'string' ? route.name : ''))
+/**
+ * 判断某个导航项是否处于选中态。
+ *
+ * <p>取**命中项中最长前缀**的那一个：否则 `/community/favorites` 会同时点亮
+ * 「校园社区」与「我的收藏」，而用户看到两个高亮项时无法判断自己在哪。
+ *
+ * @param item 导航项
+ * @returns 是否选中
+ */
+function isActive(item: NavItem): boolean {
+  const path = route.path
+  if (item.to === '/') {
+    return path === '/'
+  }
+  const hits = navItems.filter((candidate) => candidate.to !== '/' && path.startsWith(candidate.to))
+  if (hits.length === 0) {
+    return false
+  }
+  const longest = hits.reduce((a, b) => (a.to.length >= b.to.length ? a : b))
+  return longest.to === item.to
+}
+
+/** 未登录时不显示昵称，显示入口；已登录时优先展示昵称 */
+const displayName = computed(
+  () => auth.profile?.nickname || auth.profile?.username || '我的账号',
+)
+
+/** 页脚展示的版本；后端不可达时不编造一个数字，直接说明取不到 */
+const versionLabel = computed(() => {
+  const version = app.info?.version
+  if (!version) {
+    return '版本信息不可用'
+  }
+  return `v${version}`
+})
+
+const schemaLabel = computed(() => app.info?.schemaBaseline || '—')
+
+/**
+ * 登出。
+ *
+ * <p>登出之后回社区首页而不是留在原地：当前页面可能是「我的收藏」这类
+ * 需要登录的页面，留在原地会立刻被路由守卫弹到登录页，看起来像报错。
+ */
+async function onLogout(): Promise<void> {
+  await auth.logout()
+  void router.push({ name: 'community' })
+}
+
+function goLogin(): void {
+  void router.push({ name: 'login', query: { redirect: route.fullPath } })
+}
+
+onMounted(() => {
+  // store 内部有缓存，因此首页等同样读取它的页面不会产生第二次请求
+  void app.loadSystemInfo()
+})
 </script>
 
 <template>
@@ -37,14 +111,22 @@ const activeName = computed(() => (typeof route.name === 'string' ? route.name :
             v-for="item in navItems"
             :key="item.name"
             class="ch-nav__link"
-            :class="{ 'ch-nav__link--active': activeName === item.name }"
+            :class="{ 'ch-nav__link--active': isActive(item) }"
             :to="item.to"
           >
             {{ item.label }}
           </RouterLink>
         </nav>
 
-        <a-tag class="ch-header__badge" color="arcoblue" size="small">v0.1.0 · Phase 01</a-tag>
+        <div class="ch-account">
+          <template v-if="auth.isLoggedIn">
+            <span class="ch-account__name" :title="displayName">{{ displayName }}</span>
+            <a-button size="small" type="text" @click="onLogout">登出</a-button>
+          </template>
+          <template v-else>
+            <a-button size="small" type="text" @click="goLogin">登录</a-button>
+          </template>
+        </div>
       </div>
     </header>
 
@@ -53,7 +135,7 @@ const activeName = computed(() => (typeof route.name === 'string' ? route.name :
     </main>
 
     <footer class="ch-footer">
-      <span>CampusHub AI · 工程基础阶段</span>
+      <span>CampusHub AI · {{ versionLabel }} · 数据库基线 {{ schemaLabel }}</span>
       <span class="ch-footer__hint">后端接口：GET /api/v1/system/info</span>
     </footer>
   </div>
@@ -138,8 +220,20 @@ const activeName = computed(() => (typeof route.name === 'string' ? route.name :
   font-weight: 500;
 }
 
-.ch-header__badge {
+.ch-account {
+  display: flex;
   flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.ch-account__name {
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--ch-text-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ch-main {
@@ -168,11 +262,11 @@ const activeName = computed(() => (typeof route.name === 'string' ? route.name :
 
 @media (max-width: 720px) {
   .ch-header__inner {
-    gap: 16px;
+    gap: 12px;
     padding: 0 16px;
   }
 
-  .ch-header__badge {
+  .ch-account__name {
     display: none;
   }
 

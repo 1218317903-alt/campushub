@@ -120,6 +120,28 @@ class ModuleBoundaryTest {
                     .because("控制器统一放置，边界规则才能被可靠匹配");
 
     /**
+     * 组装点（{@code bootstrap}）只能依赖业务模块，不能被业务模块依赖。
+     *
+     * <p>它位于依赖图的最顶端：它的职责是把各模块的公开能力组装成一个可运行的应用
+     * （如生成演示数据）。一旦某个业务模块反过来依赖它，就等于业务代码依赖了
+     * "应用如何被组装起来"这一事实 —— 那个模块从此无法被单独理解，
+     * 而且立刻形成循环依赖的前置条件。
+     *
+     * <p>这条断言同时也是"别把业务逻辑写进 bootstrap"的守卫：它里面的类
+     * 一旦被别处引用，构建就会失败。
+     *
+     * <p>排除 {@code ai.camphub} 这一层是因为启动类与配置类在那里，
+     * 它们属于组装的一部分而不是业务模块。ArchUnit 的包匹配不含子包，
+     * 因此这一条只排除恰好位于 {@code ai.camphub} 包下的类。
+     */
+    @ArchTest
+    static final ArchRule bootstrapMustNotBeDependedOnByBusinessModules =
+            noClasses()
+                    .that().resideOutsideOfPackages("ai.camphub.bootstrap..", "ai.camphub")
+                    .should().dependOnClassesThat().resideInAPackage("ai.camphub.bootstrap..")
+                    .because("组装点位于依赖图顶端，被业务模块依赖即为反向依赖");
+
+    /**
      * 禁止字段注入。
      *
      * <p>字段注入隐藏了依赖关系、使对象无法在容器外被构造（测试只能靠反射或多起一个 Spring 上下文）、

@@ -1,6 +1,8 @@
 package ai.camphub.identity.infrastructure;
 
 import ai.camphub.identity.domain.User;
+import ai.camphub.identity.domain.UserBrief;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.apache.ibatis.annotations.Param;
@@ -59,6 +61,32 @@ public interface UserMapper {
      * @return 存在时返回用户
      */
     Optional<User> findByEmail(@Param("email") String email);
+
+    /**
+     * 批量查询用户展示信息（供其他模块通过 {@code UserDirectory} 使用）。
+     *
+     * <p>只取展示必需的四个字段。刻意不返回整行：调用方是别的模块，
+     * 它们要的是"作者叫什么、头像是什么"，而不是拿到邮箱与令牌世代号的机会。
+     *
+     * <p><b>调用方必须保证集合非空</b>：空集合会生成 {@code IN ()} 这一 SQL 语法错误。
+     * 这层保证由 {@code UserDirectory#findBriefs} 承担，不指望每个调用方都记得。
+     *
+     * @param ids 用户自增主键集合（非空）
+     * @return 用户简介列表，顺序不保证与入参一致
+     */
+    List<UserBrief> findBriefByIds(@Param("ids") Collection<Long> ids);
+
+    /**
+     * 按登录名查询用户展示信息。
+     *
+     * <p>之所以单独有这个"只取简介列"的查询，而不是复用 {@link #findByUsername}：
+     * 后者的结果集里带着邮箱与令牌世代号，把它交给调用方就等于给了对方
+     * "顺手把邮箱也返回出去"的机会。简介查询的契约就是只返回对外可见的那几个字段。
+     *
+     * @param username 登录名（区分大小写，与唯一索引一致）
+     * @return 存在时返回；账号已软删除时返回空
+     */
+    Optional<UserBrief> findBriefByUsername(@Param("username") String username);
 
     /**
      * 统计同名用户数，用于注册前的友好提示。

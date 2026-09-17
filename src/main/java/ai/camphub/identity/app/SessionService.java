@@ -3,7 +3,7 @@ package ai.camphub.identity.app;
 import ai.camphub.identity.config.SecurityProperties;
 import ai.camphub.identity.domain.DeviceLabel;
 import ai.camphub.identity.domain.RefreshTokenRecord;
-import ai.camphub.identity.domain.RandomValues;
+import ai.camphub.common.random.RandomValues;
 import ai.camphub.identity.domain.TokenHasher;
 import ai.camphub.identity.domain.User;
 import ai.camphub.identity.infrastructure.RefreshTokenMapper;

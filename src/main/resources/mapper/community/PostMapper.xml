@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.community.infrastructure.PostMapper">
+
+    <!-- javaType 必须用 _long / _int（原始类型别名）。见 CategoryMapper.xml 的说明。
+
+         列表项与详情各有一套映射、各选一套列：
+         列表刻意**不查** body_md / body_html —— 它们是 MEDIUMTEXT，
+         一页 20 条会把几百 KB 的正文搬进内存再丢掉。 -->
+    <resultMap id="PostSummaryMap" type="ai.camphub.community.domain.PostSummary">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="title" javaType="java.lang.String"/>
+            <arg column="summary" javaType="java.lang.String"/>
+            <arg column="category_slug" javaType="java.lang.String"/>
+            <arg column="category_name" javaType="java.lang.String"/>
+            <arg column="author_id" javaType="_long"/>
+            <arg column="view_count" javaType="_int"/>
+            <arg column="like_count" javaType="_int"/>
+            <arg column="favorite_count" javaType="_int"/>
+            <arg column="comment_count" javaType="_int"/>
+            <arg column="published_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="PostDetailMap" type="ai.camphub.community.domain.PostDetail">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="title" javaType="java.lang.String"/>
+            <arg column="summary" javaType="java.lang.String"/>
+            <arg column="body_md" javaType="java.lang.String"/>
+            <arg column="body_html" javaType="java.lang.String"/>
+            <arg column="category_slug" javaType="java.lang.String"/>
+            <arg column="category_name" javaType="java.lang.String"/>
+            <arg column="author_id" javaType="_long"/>
+            <arg column="view_count" javaType="_int"/>
+            <arg column="like_count" javaType="_int"/>
+            <arg column="favorite_count" javaType="_int"/>
+            <arg column="comment_count" javaType="_int"/>
+            <arg column="published_at" javaType="java.time.Instant"/>
+            <arg column="updated_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="summaryColumns">
+        p.id, p.public_id, p.title, p.summary,
+        c.slug AS category_slug, c.name AS category_name,
+        p.author_id, p.view_count, p.like_count, p.favorite_count, p.comment_count,
+        p.published_at
+    </sql>
+
+    <sql id="detailColumns">
+        p.id, p.public_id, p.title, p.summary, p.body_md, p.body_html,
+        c.slug AS category_slug, c.name AS category_name,
+        p.author_id, p.view_count, p.like_count, p.favorite_count, p.comment_count,
+        p.published_at, p.updated_at
+    </sql>
+
+    <!-- 筛选条件在列表查询与计数查询之间复用。
+         这不是为了少写几行，而是为了**防止两处口径漂移**：
+         一旦列表按"板块 + 标签"筛而计数只按"板块"算，分页总页数就是错的，
+         表现为最后一页重复或缺失内容 —— 而且不会有人来报这个错。 -->
+    <sql id="postFilter">
+        p.deleted_at IS NULL
+        <if test="categorySlug != null">
+            AND c.slug = #{categorySlug}
+        </if>
+        <if test="tagSlug != null">
+            AND EXISTS (SELECT 1
+            FROM post_tag pt
+            JOIN tag t ON t.id = pt.tag_id
+            WHERE pt.post_id = p.id
+            AND t.slug = #{tagSlug})
+        </if>
+    </sql>
+
+    <insert id="insert">
+        INSERT INTO post (public_id, author_id, category_id, title, summary,
+                          body_md, body_html, published_at)
+        VALUES (#{post.publicId}, #{post.authorId}, #{post.categoryId}, #{post.title},
+                #{post.summary}, #{post.bodyMd}, #{post.bodyHtml}, #{post.publishedAt})
+    </insert>
+
+    <select id="findDetailByPublicId" resultMap="PostDetailMap">
+        SELECT <include refid="detailColumns"/>
+        FROM post p
+        JOIN category c ON c.id = p.category_id
+        WHERE p.public_id = #{publicId}
+          AND p.deleted_at IS NULL
+    </select>
+
+    <select id="findDetailById" resultMap="PostDetailMap">
+        SELECT <include refid="detailColumns"/>
+        FROM post p
+        JOIN category c ON c.id = p.category_id
+        WHERE p.id = #{id}
+          AND p.deleted_at IS NULL
+    </select>
+
+    <!-- ORDER BY 的分支只可能来自 PostSort 这个枚举的两个取值（见 PostSort 的注释）。
+         参数占位符 #{ } 不能用于列名，因此这一段必然是拼接的 —— 让它只有两个
+         写死在这里的分支，用户输入就无法影响它。
+
+         已知限制（Phase 09 处理）：OFFSET 深分页在数据量大时会退化为扫描并丢弃，
+         届时改为基于 (published_at, id) 的游标分页。 -->
+    <select id="findSummaries" resultMap="PostSummaryMap">
+        SELECT <include refid="summaryColumns"/>
+        FROM post p
+        JOIN category c ON c.id = p.category_id
+        WHERE <include refid="postFilter"/>
+        ORDER BY
+        <choose>
+            <when test="sort.toString() == 'HOT'">
+                p.like_count DESC, p.published_at DESC
+            </when>
+            <otherwise>
+                p.published_at DESC
+            </otherwise>
+        </choose>
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByFilter" resultType="int">
+        SELECT COUNT(*)
+        FROM post p
+        JOIN category c ON c.id = p.category_id
+        WHERE <include refid="postFilter"/>
+    </select>
+
+    <!-- 收藏列表按**收藏时间**倒序：用户找的是"我最近收的那个"，
+         而不是"最近发的那篇"。因此排序用 r.created_at。 -->
+    <select id="findFavoriteSummaries" resultMap="PostSummaryMap">
+        SELECT <include refid="summaryColumns"/>
+        FROM post_reaction r
+        JOIN post p ON p.id = r.post_id
+        JOIN category c ON c.id = p.category_id
+        WHERE r.user_id = #{userId}
+          AND r.type = 'FAVORITE'
+          AND p.deleted_at IS NULL
+        ORDER BY r.created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countFavorites" resultType="int">
+        SELECT COUNT(*)
+        FROM post_reaction r
+        JOIN post p ON p.id = r.post_id
+        WHERE r.user_id = #{userId}
+          AND r.type = 'FAVORITE'
+          AND p.deleted_at IS NULL
+    </select>
+
+    <update id="updateContent">
+        UPDATE post
+        SET category_id = #{categoryId},
+            title       = #{title},
+            summary     = #{summary},
+            body_md     = #{bodyMd},
+            body_html   = #{bodyHtml}
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <update id="softDelete">
+        UPDATE post
+        SET deleted_at = #{now}
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <update id="incrementViewCount">
+        UPDATE post
+        SET view_count = view_count + 1
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <update id="incrementLikeCount">
+        UPDATE post
+        SET like_count = like_count + 1
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <!-- GREATEST(..., 0)：计数列是 INT UNSIGNED，减到负数在 MySQL 严格模式下直接报错。
+         一个已经跑偏的计数不该让"取消点赞"这个用户操作失败 ——
+         计数本身是可从明细重算的派生值（见 PostMapper 接口注释）。 -->
+    <update id="decrementLikeCount">
+        UPDATE post
+        SET like_count = GREATEST(like_count, 1) - 1
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <update id="incrementFavoriteCount">
+        UPDATE post
+        SET favorite_count = favorite_count + 1
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <update id="decrementFavoriteCount">
+        UPDATE post
+        SET favorite_count = GREATEST(favorite_count, 1) - 1
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <update id="incrementCommentCount">
+        UPDATE post
+        SET comment_count = comment_count + 1
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+    <!-- 删除评论后重算，而不是减一：删一条顶层评论会连带删掉若干回复，
+         要减多少取决于实际有几条，而重算还能顺带纠正此前的任何偏差。 -->
+    <update id="recountCommentCount">
+        UPDATE post
+        SET comment_count = (SELECT COUNT(*) FROM comment cm
+                             WHERE cm.post_id = #{postId}
+                               AND cm.deleted_at IS NULL)
+        WHERE id = #{postId}
+          AND deleted_at IS NULL
+    </update>
+
+</mapper>

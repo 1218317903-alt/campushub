@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.community.infrastructure.CategoryMapper">
+
+    <!-- ⚠️ 类型别名陷阱：MyBatis 里不带下划线的是**包装类型** ——
+         `long` 解析为 java.lang.Long、`int` 解析为 java.lang.Integer，
+         只有 `_long` / `_int` 才是原始类型。record 的规范构造器按原始类型签名，
+         写成 javaType="long" 会去找 Category(Long, ...) 这个不存在的构造器，
+         报 NoSuchMethodException，且**只在真正查询时**才暴露，编译期毫无提示。
+         （Phase 02 已在 identity 的映射里踩过一次，这里不再重复。） -->
+    <resultMap id="CategoryMap" type="ai.camphub.community.domain.Category">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="slug" javaType="java.lang.String"/>
+            <arg column="name" javaType="java.lang.String"/>
+            <arg column="description" javaType="java.lang.String"/>
+            <arg column="sort_order" javaType="_int"/>
+            <arg column="post_count" javaType="_long"/>
+        </constructor>
+    </resultMap>
+
+    <!-- 计数口径：只数未被删除的帖子。用 LEFT JOIN 而不是 INNER JOIN，
+         否则没有任何帖子的板块会整个消失 —— 那正是新部署时最需要被看到的板块。 -->
+    <sql id="categoryWithCount">
+        SELECT c.id,
+               c.slug,
+               c.name,
+               c.description,
+               c.sort_order,
+               COUNT(p.id) AS post_count
+        FROM category c
+                 LEFT JOIN post p
+                           ON p.category_id = c.id
+                               AND p.deleted_at IS NULL
+    </sql>
+
+    <select id="findAllWithPostCount" resultMap="CategoryMap">
+        <include refid="categoryWithCount"/>
+        GROUP BY c.id, c.slug, c.name, c.description, c.sort_order
+        ORDER BY c.sort_order, c.id
+    </select>
+
+    <select id="findBySlug" resultMap="CategoryMap">
+        <include refid="categoryWithCount"/>
+        WHERE c.slug = #{slug}
+        GROUP BY c.id, c.slug, c.name, c.description, c.sort_order
+    </select>
+
+</mapper>

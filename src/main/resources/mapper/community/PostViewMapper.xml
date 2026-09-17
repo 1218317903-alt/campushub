@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.community.infrastructure.PostViewMapper">
+
+    <!-- view_date 用 CURRENT_DATE() 而不是由应用传入：
+         MySQL 会话时区已由 JDBC 连接串固定为 Asia/Shanghai，让数据库自己算"今天是哪天"，
+         就不需要在应用侧再维护一份同样的时区配置（两份配置迟早会漂移，
+         而漂移的表现是"每天有 8 小时计数偏大"，不会报任何错）。
+         完整理由见 PostViewMapper 接口注释。 -->
+    <insert id="insertIfAbsent">
+        INSERT IGNORE INTO post_view_daily (post_id, view_date, user_id)
+        VALUES (#{postId}, CURRENT_DATE(), #{userId})
+    </insert>
+
+</mapper>

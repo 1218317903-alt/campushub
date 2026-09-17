@@ -81,6 +81,34 @@
         WHERE username = #{username}
     </select>
 
+    <!-- 供其他模块使用的用户简介查询。
+         注意 javaType 仍必须用 _long（原始类型别名），理由见上方 UserMap 的注释。 -->
+    <resultMap id="UserBriefMap" type="ai.camphub.identity.domain.UserBrief">
+        <constructor>
+            <arg column="id" javaType="_long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="nickname" javaType="java.lang.String"/>
+            <arg column="avatar_url" javaType="java.lang.String"/>
+        </constructor>
+    </resultMap>
+
+    <select id="findBriefByIds" resultMap="UserBriefMap">
+        SELECT id, public_id, nickname, avatar_url
+        FROM `user`
+        WHERE deleted_at IS NULL
+          AND id IN
+        <foreach collection="ids" item="userId" open="(" separator="," close=")">
+            #{userId}
+        </foreach>
+    </select>
+
+    <select id="findBriefByUsername" resultMap="UserBriefMap">
+        SELECT id, public_id, nickname, avatar_url
+        FROM `user`
+        WHERE username = #{username}
+          AND deleted_at IS NULL
+    </select>
+
     <select id="countByEmail" resultType="int">
         SELECT COUNT(*)
         FROM `user`
