@@ -1,0 +1,106 @@
+# ==========================================================================
+# CampusHub AI · 持续集成
+# ==========================================================================
+# 唯一目标：**让"红灯"尽早出现**。
+#
+# 设计原则：
+#   1. CI 里跑的命令必须与本地完全一致（`./mvnw -B verify` / `npm run build`）。
+#      如果两边不一致，就会出现"本地绿、CI 红"或反过来的情况 ——
+#      这类漂移比没有 CI 更消耗信任，因为它让人开始怀疑到底以哪边为准。
+#   2. 不只跑测试，还保留测试报告与失败时的运行时日志制品。
+#      只给一个"失败"的结论而不给证据，排查只能靠猜。
+#   3. 不做缓存之外的"优化"（不跳测试、不并行拆分）。
+#      当前规模下一次全量构建只要几十秒，跳测试换来的是虚假的绿色。
+#
+# 关于集成测试：后端集成测试用 Testcontainers 启动真实 MySQL 容器，
+# 依赖 Docker。GitHub 托管的 ubuntu runner 自带 Docker，无需额外配置。
+# 刻意**不**用 H2 替代 —— 那是把"能否在 CI 上跑"冒充成"能否在生产上跑"。
+#
+# 若将来托管平台从 GitHub 换成其它平台，只需把本文件翻译成对应的
+# 流水线格式即可，**不需要改动任何构建脚本** —— 这正是把所有构建入口
+# 收敛到 `mvnw` 与 `npm run *` 的收益。
+# ==========================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+# 同一分支上被新提交顶掉的运行直接取消，避免排队浪费。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ------------------------------------------------------------------------
+  # 后端：编译 + 单元测试 + 架构边界测试 + 真实 MySQL 集成测试
+  # ------------------------------------------------------------------------
+  backend:
+    name: 后端 · 构建与全量测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          # 缓存 ~/.m2，键由 pom.xml 内容决定
+          cache: maven
+
+      # mvnw 是 only-script 型 wrapper：首次运行会自行下载 Maven 3.9.16，
+      # 因此 CI 上不需要预装 Maven，也不会出现"CI 用的 Maven 版本与本地不同"。
+      - name: 构建并运行全量测试（单元 + 架构 + 集成）
+        run: ./mvnw -B verify
+
+      # 失败时最需要的东西：具体是哪个测试、什么断言、服务端日志。
+      - name: 归档测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ------------------------------------------------------------------------
+  # 前端：类型检查 + 生产构建
+  # ------------------------------------------------------------------------
+  frontend:
+    name: 前端 · 类型检查与构建
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 用 ci 而不是 install：ci 严格按 package-lock.json 安装，
+      # 并在 lock 与 package.json 不一致时直接失败 ——
+      # 这正是我们想要的，因为那种不一致意味着版本已经不可复现了。
+      - name: 安装依赖（严格按 lock 文件）
+        run: npm ci
+
+      # 包含 vue-tsc 类型检查。strictTemplates 已开启，
+      # 模板里拼错的组件名会在这里被拦下，而不是上线后静默失效。
+      - name: 类型检查与生产构建
+        run: npm run build
