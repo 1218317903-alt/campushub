@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.identity.infrastructure.UserMapper">
+
+    <!-- 显式声明构造器映射，不依赖全局 mapUnderscoreToCamelCase：
+         全局开关一旦被改动，这类隐式依赖会静默失效。 -->
+    <resultMap id="UserMap" type="ai.camphub.identity.domain.User">
+        <constructor>
+            <idArg column="id" javaType="long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="username" javaType="java.lang.String"/>
+            <arg column="email" javaType="java.lang.String"/>
+            <arg column="nickname" javaType="java.lang.String"/>
+            <arg column="avatar_url" javaType="java.lang.String"/>
+            <arg column="bio" javaType="java.lang.String"/>
+            <!-- 状态列的字符串与枚举名一一对应，用 MyBatis 默认的 EnumTypeHandler 即可；
+                 遇到未登记的值会抛异常而不是静默落回某个默认状态，这是刻意的。 -->
+            <arg column="status" javaType="ai.camphub.identity.domain.UserStatus"/>
+            <arg column="token_version" javaType="int"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+            <arg column="updated_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="userColumns">
+        id, public_id, username, email, nickname, avatar_url, bio, status, token_version, created_at, updated_at
+    </sql>
+
+    <insert id="insert">
+        INSERT INTO `user` (public_id, username, email, nickname, avatar_url, bio, status, token_version)
+        VALUES (#{user.publicId},
+                #{user.username},
+                #{user.email},
+                #{user.nickname},
+                #{user.avatarUrl},
+                #{user.bio},
+                #{user.status},
+                #{user.tokenVersion})
+    </insert>
+
+    <select id="findById" resultMap="UserMap">
+        SELECT <include refid="userColumns"/>
+        FROM `user`
+        WHERE id = #{id}
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="findByPublicId" resultMap="UserMap">
+        SELECT <include refid="userColumns"/>
+        FROM `user`
+        WHERE public_id = #{publicId}
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="findByUsername" resultMap="UserMap">
+        SELECT <include refid="userColumns"/>
+        FROM `user`
+        WHERE username = #{username}
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="findByEmail" resultMap="UserMap">
+        SELECT <include refid="userColumns"/>
+        FROM `user`
+        WHERE email = #{email}
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="countByUsername" resultType="int">
+        SELECT COUNT(*)
+        FROM `user`
+        WHERE username = #{username}
+    </select>
+
+    <select id="countByEmail" resultType="int">
+        SELECT COUNT(*)
+        FROM `user`
+        WHERE email = #{email}
+    </select>
+
+    <select id="selectRoleCodesByUserId" resultType="java.lang.String">
+        SELECT r.code
+        FROM user_role ur
+                 JOIN role r ON r.id = ur.role_id
+        WHERE ur.user_id = #{userId}
+    </select>
+
+    <select id="selectPermissionCodesByUserId" resultType="java.lang.String">
+        SELECT DISTINCT p.code
+        FROM user_role ur
+                 JOIN role_permission rp ON rp.role_id = ur.role_id
+                 JOIN permission p ON p.id = rp.permission_id
+        WHERE ur.user_id = #{userId}
+    </select>
+
+    <!-- 用 token_version = token_version + 1 而不是"读-改-写"：并发下后者会丢更新 -->
+    <update id="incrementTokenVersion">
+        UPDATE `user`
+        SET token_version = token_version + 1
+        WHERE id = #{userId}
+    </update>
+
+    <update id="updateProfile">
+        UPDATE `user`
+        SET nickname   = #{nickname},
+            avatar_url = #{avatarUrl},
+            bio        = #{bio}
+        WHERE id = #{userId}
+          AND deleted_at IS NULL
+    </update>
+
+    <!-- 角色按 code 解析，避免把 role 的自增 id 写死在代码或脚本里 -->
+    <insert id="assignRoleByCode">
+        INSERT INTO user_role (user_id, role_id)
+        SELECT #{userId}, id
+        FROM role
+        WHERE code = #{roleCode}
+    </insert>
+
+</mapper>
