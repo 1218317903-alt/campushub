@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.identity.infrastructure.RefreshTokenMapper">
+
+    <!-- javaType 中的下划线不能去掉：MyBatis 别名表里 `_long` 是原始类型 long，
+         而 `long` 是包装类型 Long。rotated_from 可空，因此刻意用 java.lang.Long 而非 _long。 -->
+    <resultMap id="RefreshTokenMap" type="ai.camphub.identity.domain.RefreshTokenRecord">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="user_id" javaType="_long"/>
+            <arg column="token_hash" javaType="java.lang.String"/>
+            <arg column="device" javaType="java.lang.String"/>
+            <arg column="expires_at" javaType="java.time.Instant"/>
+            <arg column="revoked_at" javaType="java.time.Instant"/>
+            <arg column="rotated_from" javaType="java.lang.Long"/>
+            <arg column="last_used_at" javaType="java.time.Instant"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="tokenColumns">
+        id, user_id, token_hash, device, expires_at, revoked_at, rotated_from, last_used_at, created_at
+    </sql>
+
+    <insert id="insert">
+        INSERT INTO refresh_token (user_id, token_hash, device, expires_at, revoked_at, rotated_from, last_used_at)
+        VALUES (#{record.userId},
+                #{record.tokenHash},
+                #{record.device},
+                #{record.expiresAt},
+                #{record.revokedAt},
+                #{record.rotatedFrom},
+                #{record.lastUsedAt})
+    </insert>
+
+    <select id="findByTokenHash" resultMap="RefreshTokenMap">
+        SELECT <include refid="tokenColumns"/>
+        FROM refresh_token
+        WHERE token_hash = #{tokenHash}
+    </select>
+
+    <select id="findById" resultMap="RefreshTokenMap">
+        SELECT <include refid="tokenColumns"/>
+        FROM refresh_token
+        WHERE id = #{id}
+    </select>
+
+    <!-- 取最近一条：一次性令牌被重复使用时，可能存在多条后继（例如并发竞态下各开了一条链）。
+         按 id 倒序取最新的一条来判断"这是不是刚刚发生的正常并发"。 -->
+    <select id="findLatestByRotatedFrom" resultMap="RefreshTokenMap">
+        SELECT <include refid="tokenColumns"/>
+        FROM refresh_token
+        WHERE rotated_from = #{rotatedFrom}
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <!-- 只要"仍有效"的会话：已撤销的与已过期的都不该出现在设备列表里，
+         否则用户会看到一堆早已失效的设备，无法判断真正该下线哪一台 -->
+    <select id="findActiveByUserId" resultMap="RefreshTokenMap">
+        SELECT <include refid="tokenColumns"/>
+        FROM refresh_token
+        WHERE user_id = #{userId}
+          AND revoked_at IS NULL
+          AND expires_at &gt; #{now}
+        ORDER BY created_at DESC
+    </select>
+
+    <update id="revoke">
+        UPDATE refresh_token
+        SET revoked_at = #{revokedAt}
+        WHERE id = #{id}
+          AND revoked_at IS NULL
+    </update>
+
+    <update id="revokeAllActiveByUserId">
+        UPDATE refresh_token
+        SET revoked_at = #{revokedAt}
+        WHERE user_id = #{userId}
+          AND revoked_at IS NULL
+    </update>
+
+    <update id="updateLastUsed">
+        UPDATE refresh_token
+        SET last_used_at = #{lastUsedAt}
+        WHERE id = #{id}
+    </update>
+
+</mapper>

@@ -7,6 +7,7 @@ import jakarta.validation.ConstraintViolationException;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
@@ -52,6 +53,28 @@ public class GlobalExceptionHandler {
         ErrorCode errorCode = ex.errorCode();
         log.warn("业务异常 code={} path={} message={}", errorCode.code(), request.getRequestURI(), ex.getMessage());
         return build(errorCode, ex.getMessage(), request);
+    }
+
+    /**
+     * 限流异常：与普通业务异常的唯一区别是要带 {@code Retry-After} 响应头。
+     *
+     * <p>必须比 {@link #handleBusiness} 更具体，Spring 才会优先选中本方法。
+     * 把 {@code Retry-After} 放在响应头而不是只写进 JSON 体，是为了让通用的
+     * HTTP 客户端与网关也能正确退避，而不需要它们解析我们的业务报文。
+     *
+     * @param ex      限流异常
+     * @param request 当前请求
+     * @return 统一错误响应，附带 Retry-After
+     */
+    @ExceptionHandler(RateLimitedException.class)
+    public ResponseEntity<ApiError> handleRateLimited(RateLimitedException ex, HttpServletRequest request) {
+        long retryAfterSeconds = Math.max(1, ex.retryAfter().toSeconds());
+        log.warn("触发限流 path={} retryAfter={}s", request.getRequestURI(), retryAfterSeconds);
+        ApiError body = ApiError.of(ErrorCode.RATE_LIMITED, ex.getMessage(),
+                TraceIdFilter.currentTraceId(), request.getRequestURI());
+        return ResponseEntity.status(ErrorCode.RATE_LIMITED.httpStatus())
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds))
+                .body(body);
     }
 
     /**

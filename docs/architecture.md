@@ -60,16 +60,35 @@ CampusHubAI/
 ai.camphub
 ├── CamphubApplication.java          唯一启动类
 ├── common/                          共享内核（只能被依赖，不能依赖业务模块）
-│   ├── config/                      AppProperties · OpenApiConfig
+│   ├── config/                      AppProperties · RequestProperties · OpenApiConfig
 │   ├── error/                       ErrorCode · ApiError · BusinessException · GlobalExceptionHandler
-│   └── web/                         TraceIdFilter
-├── system/                          模块（Phase 01 唯一的模块）
+│   └── web/                         TraceIdFilter · ClientIpResolver
+├── system/                          模块（Phase 01）
 │   ├── api/         ← 对外边界：Controller + Request/Response DTO
 │   ├── app/         ← 应用服务：事务边界、权限校验、编排
 │   ├── domain/      ← 领域模型：不依赖任何 Spring 类
 │   └── infrastructure/ ← 技术实现：Mapper 接口 + XML
-└── （Phase 02 起追加 identity / community / workspace / …）
+├── identity/                        模块（Phase 02）：账号体系与鉴权
+│   ├── api/                         AuthController · UserController（均不含"操作哪个用户"这类参数）
+│   ├── app/                         AuthService · AccountService · SessionService ·
+│   │                                RefreshTokenService · RefreshTokenLeakHandler ·
+│   │                                LoginAttemptService · AuthRateLimiter
+│   ├── config/                      SecurityProperties（安全参数的集中声明处）
+│   ├── domain/                      User · UserCredential · UserStatus · UserPrincipal ·
+│   │                                Role · RefreshTokenRecord · PasswordPolicy ·
+│   │                                TokenHasher · RandomValues · DeviceLabel
+│   └── infrastructure/
+│       ├── (Mapper + XML)
+│       └── security/                JwtTokenService · JwtAuthenticationFilter ·
+│                                    UserPrincipalLoader · SecurityConfig ·
+│                                    RestAuthenticationEntryPoint · RestAccessDeniedHandler ·
+│                                    ApiErrorResponseWriter · CommonPasswordList
+└── platform/                        平台能力（非业务域）
+    └── audit/                       AuditAction · AuditResult · AuditEntry · AuditService
 ```
+
+`platform.audit` 归属 `platform` 而非 `identity`：审计是**横向能力**，
+后续 community / workspace / ai 都要写审计。放进 `identity` 会让每个模块都反向依赖它。
 
 各层职责与**禁止事项**：
 
@@ -165,7 +184,97 @@ frontend/src/
 请求头是**不可信输入**。若不校验就写进日志，攻击者可以塞入换行符伪造日志行（log injection），
 把虚假记录混进真实日志。因此只接受严格字符集，其余一律丢弃并重新生成。
 
-### 3.2 为什么 MDC 必须在 `finally` 清理
+### 3.2 受保护接口的链路（Phase 02 起）
+
+以 `GET /api/v1/users/me` 为例。与上面那条链路的关键差别是：**鉴权发生在 DispatcherServlet 之前**，
+因此错误响应也必须由过滤链自己写出（否则会退化成容器的空白 401，破坏统一错误契约）。
+
+```
+1  TraceIdFilter                      写 MDC + X-Trace-Id
+        ↓
+2  JwtAuthenticationFilter（OncePerRequestFilter，位于 UsernamePasswordAuthenticationFilter 之前）
+   ├─ 无 Authorization 头 → 直接放行，不写任何响应（可能是公开端点）
+   ├─ decode() 校验签名 / exp / nbf / iss / 必需声明存在性
+   │    └─ 失败 → 把 ErrorCode 放进请求属性，**仍然放行**
+   ├─ UserPrincipalLoader.load(uid)     每请求回库读账号 + 角色 + 权限
+   │    ├─ 账号不存在        → TOKEN_REVOKED
+   │    ├─ 账号非 ACTIVE     → ACCOUNT_NOT_USABLE
+   │    └─ ver ≠ user.token_version → TOKEN_REVOKED
+   └─ 全部通过 → SecurityContextHolder.setAuthentication(principal)
+        ↓
+3  AuthorizationFilter（Spring Security）
+   ├─ 未认证 + 受保护端点 → RestAuthenticationEntryPoint
+   │    └─ 读请求属性里的 ErrorCode；无则 UNAUTHENTICATED
+   │       → ApiErrorResponseWriter 写统一错误信封（401 或 403，由错误码决定）
+   ├─ 已认证但权限不足 → RestAccessDeniedHandler
+   └─ 通过 → 继续
+        ↓
+4  DispatcherServlet → UserController.me(@AuthenticationPrincipal UserPrincipal)
+        ↓
+5  AccountService.getSelf(principal.userId())        ← 身份来自上下文，不是 URL 参数
+        ↓
+6  UserMapper.findById(userId) → SELECT … FROM `user` WHERE id = ? AND deleted_at IS NULL
+        ↑
+7  返回 UserProfileResponse（无邮箱、无状态、无自增 ID）
+```
+
+**为什么令牌无效时不直接返回 401**：本过滤器只把错误码写进请求属性后继续放行。
+原因有二 —— 受保护端点后续的授权过滤器会拒绝该请求，未认证处理器读到该属性后
+客户端拿到的是"令牌已过期"而不是笼统的"未登录"，这两者对前端意味着不同动作
+（静默刷新 vs 要求重新登录）；公开端点（如 `/auth/login`）则正常执行 ——
+这一点很关键：若过滤器直接拦下无效令牌，一个令牌已过期的客户端连"重新登录"
+这个接口都调不到，会陷入无法自救的状态。
+
+> 一句话：**无效令牌只说明"这次请求不是已认证身份"，不说明"整个请求非法"。**
+
+**为什么未认证的未知路径返回 401 而不是 404**：请求在过滤链就被拦下，
+从未走到路由匹配。这是期望的行为 —— 若未认证调用方能靠 404/405 与 401 的差别
+区分路径是否存在，就等于提供了一个免费的接口枚举器。
+
+### 3.3 令牌体系
+
+| 令牌 | 形态 | 有效期 | 服务端状态 | 撤销方式 |
+|---|---|---|---|---|
+| 访问令牌 | JWT（HS256 自签） | 15 分钟 | **无状态** | 世代号比对（粗粒度，账号级） |
+| 刷新令牌 | 32 字节随机值（Base64URL） | 30 天 | **有状态**：只存 SHA-256 | 逐条撤销 / 全部撤销 + 轮换 |
+
+令牌中**刻意不放角色与权限**：令牌签发后无法收回，把权限写进令牌意味着撤销一个管理员的权限
+要等他的令牌自然过期。改为每次鉴权回库读取，权限变更立即生效 —— 代价是每请求一次数据库往返。
+
+**为什么是 HS256 而不是 RS256**：RS256 的价值在于"验证方拿不到签发密钥"（公私钥分离），
+适用于 A 服务签发、B/C 服务验证的场景。当前是单体应用，签发与验证在同一进程内，
+引入非对称密钥只增加密钥分发与轮换的复杂度，不带来实际安全收益。
+若将来 AI Runtime 需要独立验证令牌，那次演进会同时需要密钥分发机制，到那时再换 RS256 才是有依据的决定。
+
+**轮换与重放检测**：每次刷新都签发新令牌并作废旧令牌（`revoked_at` + `rotated_from` 串成链）。
+被轮换掉的旧令牌若再次出现，说明令牌已泄露到客户端之外。判定时用两条判据区分两种情形：
+
+| 情形 | 数据特征 | 处置 |
+|---|---|---|
+| 多标签页并发刷新 | 后继令牌存在、仍有效、且**设备标识相同**、旧令牌撤销在 5 秒内 | 不判泄露，返回"请使用最新令牌" |
+| 确凿的泄露 | 其余（含跨设备、后继已失效、超出宽限窗口） | 撤销该账号**全部**会话 + 推进世代号 + 记 `AUTH_TOKEN_REPLAY_DETECTED` |
+
+实时序见 `RefreshTokenService` 与 `RefreshTokenLeakHandler` 的类注释。
+
+### 3.4 事务边界：三类"必须独立提交"的写入
+
+本项目有一个反复出现的模式，值得单独记下来 —— **写入之后代码必然抛异常的路径，
+不能挂在会回滚的事务上**：
+
+| 组件 | 事务 | 不这样做会发生什么 |
+|---|---|---|
+| `AuditService` | `REQUIRES_NEW` | 失败路径的审计随业务回滚一起消失，而那恰是审计里最有价值的一类记录 |
+| `LoginAttemptService` | `REQUIRES_NEW` | 失败计数永远停在 0，"连续失败 5 次锁定"在生产上永不生效 |
+| `RefreshTokenLeakHandler` | `REQUIRES_NEW` | 泄露处置（撤销全部会话 + 推进世代号）被回滚吞掉，客户端收到"已登出全部设备"而数据库什么都没变 |
+
+第三种是本阶段实际发生过的缺陷（见 `CHANGELOG.md` 0.2.0 / Fixed），也是最隐蔽的一种：
+处置确实执行了、审计也确实写下了"处置成功"，只有事务回滚在静默地撤销它。
+
+`LoginAttemptService` 与 `RefreshTokenLeakHandler` 单独成类还有一个共同理由：
+Spring 的事务基于代理，**同一个类内部的方法自调用不会走代理**，`@Transactional` 会被静默忽略。
+拆成独立 Bean 是让注解真正生效的前提，而这个坑不会报错，只会让事务边界悄悄失效。
+
+### 3.5 为什么 MDC 必须在 `finally` 清理
 
 Tomcat 复用线程。不清理会把上一个请求的 traceId 带到下一个请求的日志里 ——
 这种「串号」比没有 traceId 更糟：它会引导排查到错误的地方。
@@ -322,15 +431,38 @@ HHH SS
 H2 与 MySQL 在字符集、排序规则、`ON UPDATE CURRENT_TIMESTAMP`、JSON 函数上行为不同。
 用 H2 跑的绿灯是**假绿灯** —— 它验证的是「在 H2 上能跑」，而生产跑的是 MySQL。
 
-**② 断言用 JDK 内建 HttpClient + JsonPath，不用 RestAssured / MockMvc 做端到端。**
+**② 断言用 JDK 内建 HttpClient + Jackson，不用 RestAssured / MockMvc 做端到端。**
 目的是让测试对框架版本升级不敏感。Boot 4 期间测试工具链变动频繁，
 把测试绑在框架抽象上会让升级成本翻倍。**用真实 HTTP 打真实端口**，最接近真实调用方。
+JSON 解析复用容器里那个 `ObjectMapper`（Boot 4 起是 Jackson 3 的 `tools.jackson`），
+这样"测试怎么解析响应"与"应用怎么序列化响应"用的是同一套配置。
 
 **③ 用 `127.0.0.1` 而非 `localhost`。**
 `localhost` 在部分环境下会先解析到 IPv6 `::1`，而容器端口映射在 IPv4 上，
 表现为「偶发的连接被拒绝」—— 这类不确定性排查成本极高，从源头避免。
 
-### 8.2 命令
+### 8.2 安全测试的组织方式（Phase 02）
+
+安全断言与功能断言分开成类，因为**它们的价值来源不同**：功能断言在有反馈，
+安全断言在"不能用的地方确实不能用"，上线时永远不会有反馈 —— 只有攻击者会告诉你漏了哪一条。
+
+| 类 | 聚焦 |
+|---|---|
+| `AuthFlowIT` | 正向链路 + 契约边界。除"能注册能登录"外，重点断言**响应与库里到底存了什么**（密码只落 BCrypt cost=12 的哈希、刷新令牌只落 SHA-256） |
+| `TokenLifecycleIT` | 轮换、重放、撤销、过期。最有价值的断言不是"接口返回了什么"，而是**"事后那个令牌还能不能用"** |
+| `AccountSecurityIT` | 越权、改密、锁定、限流。验证 404 而非 403 的越权语义、改密后其它设备立即失效、连输 5 次锁定、429 + `Retry-After` |
+| `PasswordPolicyTest` · `DeviceLabelTest` · `ClientIpResolverTest` | 纯逻辑，不起容器。`ClientIpResolverTest` 钉住的是**"默认不信任代理头"**这条安全属性 —— 集成测试跑在信任代理头的配置下，那条属性只能在这里被覆盖 |
+
+**自己签发令牌**：过期、缺声明、账号不存在这三条分支无法靠正常流程触发（正常令牌 15 分钟才过期，
+等不起）。测试用**同密钥、同签发者**自造令牌精准命中校验链的每一环 ——
+用同一密钥而不是随便一个，是为了确保失败原因就是被测的那一环，而不是被"签名不符"提前拦掉。
+
+**每个用例一个来源 IP**：限流按 IP 分桶，注册桶只有 5 次/小时。若所有用例都从容器网关的
+`127.0.0.1` 发起，几十个用例会互相消耗额度，产生"单跑通过、全量跑 429"这类最难排查的失败。
+测试 profile 开启 `trust-forwarded-headers`，让用例用 `X-Forwarded-For` 各占一个桶
+（RFC 5737 的 `198.51.100.0/24`，一眼能看出不是真实来源），而限流逻辑本身仍是被真实执行的那份代码。
+
+### 8.3 命令
 
 ```bash
 make test      # 仅单元测试（*Test），不需要 Docker
@@ -372,8 +504,11 @@ make fe-install && make fe-dev
 |---|---|---|
 | 前端 API 类型手写 | 与后端 record 手工对齐 | 接口数量上来、契约频繁变动；届时用 `openapi-typescript` 从 `/v3/api-docs` 生成 |
 | 无 CORS 配置 | 前端走 dev proxy / 同源反代 | 出现真实的跨域部署形态时再配，且必须白名单而非 `*` |
-| 无认证 | 所有端点公开 | Phase 02 引入 Spring Security；`system/info` 保持公开（仅非敏感事实） |
-| 无速率限制 | — | Phase 02 起 |
+| 限流为单实例内存实现 | 多实例部署时额度为"配置值 × 实例数"；重启清零；固定窗口有边界效应 | Phase 09 引入 Redis；**前提是先压测确认它确实是瓶颈** |
+| 不做访问令牌黑名单 | 撤销是账号级粗粒度：撤销单个设备会使该账号所有访问令牌失效 | 需要"精准撤销单个访问令牌"时再引入，需额外的存储与清理任务 |
+| 每请求回库装配权限 | 无权限缓存，换来实现简单、权限变更立即生效 | Phase 09 压测后按实测决定是否加缓存及失效策略 |
+| 审计只写不查 | `audit_log` 仅写入 | Phase 10 提供查询接口与后台展示 |
+| 无 MFA / 第三方登录 / 邮箱验证 | — | 不在 Phase 02 范围；有明确需求时单独立项 |
 | 连接池起步值保守（max 10） | 无负载数据支撑调参 | Phase 09 压测后按实测调整 |
 | 前端无组件测试 | 仅类型检查 + 构建校验 | 业务组件出现后引入 Vitest，避免为测试骨架而测试 |
 | 前端无 ESLint / Prettier | 依靠 `strict` TS 与 `strictTemplates` | 多人协作或格式化争议出现时引入 |
@@ -387,3 +522,4 @@ make fe-install && make fe-dev
 | 日期 | Version | 变更 |
 |---|---|---|
 | 2026-09-17 | `v0.1.0` | 初版。Phase 01：工程骨架、统一错误契约、traceId 链路、Flyway、MyBatis、三层测试体系、前端骨架 |
+| 2026-09-17 | `v0.2.0` | Phase 02：新增 §3.2 受保护接口链路与 §3.3 令牌体系与 §3.4 事务边界、§8.2 安全测试组织；包结构补入 `identity` 与 `platform.audit`；取舍表更新认证与限流状态 |

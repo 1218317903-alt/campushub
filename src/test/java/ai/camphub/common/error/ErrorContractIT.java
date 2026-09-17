@@ -22,31 +22,58 @@ import org.junit.jupiter.api.Test;
  *
  * <p>本测试专门覆盖这些"框架抛出的错误"，确保它们同样被
  * {@link GlobalExceptionHandler} 接管并转换成统一结构。
+ *
+ * <h2>Phase 02 带来的行为变化：未认证请求一律 401，不再先回答"这个路径存在吗"</h2>
+ * 引入 Spring Security 并采用"默认拒绝"之后，未认证请求会在安全过滤链就被拦下，
+ * 因此对不存在的路径得到的是 <b>401 而不是 404</b>。这是<b>期望</b>的行为，不是回归：
+ * 若未认证调用方能靠 404/405 与 401 的差别区分路径是否存在，就等于提供了一个
+ * 免费的接口枚举器。本类因此分成两组用例：
+ * 一组<b>带令牌</b>验证 404/405 的统一错误结构（授权之后才该回答的问题），
+ * 一组<b>不带令牌</b>验证"先认证再谈其它"这条规则本身。
  */
 class ErrorContractIT extends AbstractIntegrationTest {
 
     @Test
-    @DisplayName("访问不存在的路径返回统一 404 结构，而不是 Spring 默认错误结构")
+    @DisplayName("已认证时访问不存在的路径：返回统一 404 结构，而不是 Spring 默认错误结构")
     void unknownPathShouldReturnUnifiedNotFound() throws Exception {
-        HttpResponse<String> response = get("/api/v1/this-path-does-not-exist");
+        TestAccount account = registerAccount(nextIp());
+
+        HttpResponse<String> response = getWithToken("/api/v1/this-path-does-not-exist",
+                account.tokens().access());
 
         assertThat(response.statusCode()).isEqualTo(404);
         assertCommonErrorShape(response.body(), ErrorCode.NOT_FOUND.code(), "/api/v1/this-path-does-not-exist");
     }
 
     @Test
-    @DisplayName("错误的 HTTP 方法返回统一 405 结构")
+    @DisplayName("已认证时用错 HTTP 方法：返回统一 405 结构")
     void wrongMethodShouldReturnUnifiedMethodNotAllowed() throws Exception {
-        HttpResponse<String> response = send("POST", "/api/v1/system/info", "{}", Map.of());
+        TestAccount account = registerAccount(nextIp());
+
+        HttpResponse<String> response = sendJson("POST", "/api/v1/system/info", "{}",
+                account.tokens().access());
 
         assertThat(response.statusCode()).isEqualTo(405);
         assertCommonErrorShape(response.body(), ErrorCode.METHOD_NOT_ALLOWED.code(), "/api/v1/system/info");
     }
 
     @Test
+    @DisplayName("未认证访问不存在的路径：401 而不是 404（不泄漏路径是否存在）")
+    void unauthenticatedUnknownPath_returnsUnauthorizedNotNotFound() throws Exception {
+        HttpResponse<String> response = get("/api/v1/this-path-does-not-exist");
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertCommonErrorShape(response.body(), ErrorCode.UNAUTHENTICATED.code(),
+                "/api/v1/this-path-does-not-exist");
+    }
+
+    @Test
     @DisplayName("错误响应带 X-Trace-Id 响应头，且与响应体中的 traceId 一致")
     void traceIdShouldBeConsistentBetweenHeaderAndBody() throws Exception {
-        HttpResponse<String> response = get("/api/v1/this-path-does-not-exist");
+        TestAccount account = registerAccount(nextIp());
+
+        HttpResponse<String> response = getWithToken("/api/v1/this-path-does-not-exist",
+                account.tokens().access());
 
         String headerTraceId = response.headers().firstValue("X-Trace-Id").orElse(null);
         String bodyTraceId = JsonPath.read(response.body(), "$.traceId");
@@ -60,6 +87,8 @@ class ErrorContractIT extends AbstractIntegrationTest {
     void inboundTraceIdShouldBePropagated() throws Exception {
         String inbound = "gateway-trace-12345";
 
+        // 这一条刻意不带令牌：它要证明的是"在安全过滤链拒绝请求的情况下，
+        // traceId 透传依然生效"—— 否则排查线上 401 问题时反而拿不到能串联日志的 ID
         HttpResponse<String> response = get("/api/v1/this-path-does-not-exist",
                 Map.of("X-Trace-Id", inbound));
 
@@ -69,7 +98,9 @@ class ErrorContractIT extends AbstractIntegrationTest {
     @Test
     @DisplayName("错误响应不得泄漏内部实现细节")
     void errorResponseMustNotLeakInternals() throws Exception {
-        HttpResponse<String> response = get("/api/v1/this-path-does-not-exist");
+        TestAccount account = registerAccount(nextIp());
+        HttpResponse<String> response = getWithToken("/api/v1/this-path-does-not-exist",
+                account.tokens().access());
         String body = response.body();
 
         // 这些字符串一旦出现在响应里，说明把框架/ORM/文件系统的内部信息暴露给了调用方

@@ -50,6 +50,7 @@ class ModuleBoundaryTest {
             "ai.camphub.notification..",
             "ai.camphub.moderation..",
             "ai.camphub.admin..",
+            "ai.camphub.platform..",
             "ai.camphub.system.."
     };
 

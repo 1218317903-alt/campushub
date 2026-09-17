@@ -73,13 +73,42 @@ curl -s http://127.0.0.1:8080/actuator/health
 **Phase 01 已完成**：工程骨架、统一错误契约、traceId 日志链路、配置文件分层、
 健康检查、Flyway 迁移体系、MyBatis 数据访问、三层测试体系、前端骨架。
 
-> ⚠️ **尚未实现任何认证与授权，所有接口当前均为公开。不得在此状态下部署到公网。**
-> 认证在 Phase 02 引入。
+**Phase 02 已完成**（`v0.2.0`）：账号体系与鉴权能力 —— 注册 / 登录 / 登出、
+访问令牌 + 刷新令牌（轮换 + 重放检测）、令牌撤销、密码策略、基础限流、审计基础。
+
+> **接口现默认需要认证。** 引入 Spring Security 并采用"默认拒绝"后，
+> 只有以下端点是公开的：`POST /api/v1/auth/register|login|refresh|logout`、
+> `GET /api/v1/system/info`、`/actuator/health|info`、API 文档。
+> 其余一律需要 `Authorization: Bearer <accessToken>`。
+>
+> **部署前必须注入 `APP_JWT_SECRET`**（`openssl rand -base64 48`）。
+> 未配置或长度不足 32 字节时应用**启动即失败** —— 这是刻意的：
+> 一个"能启动但人人可猜"的默认密钥，等于把所有用户的账号交给第一个读到源码的人。
 
 后续阶段按 [Phase 计划](docs/12-phase-plan.md) 推进：
-Identity & Security → Community MVP → Workspace → 对象存储 → 数据采集 → 搜索 →
+Community MVP → Workspace 与资源级鉴权 → 对象存储 → 数据采集 → 搜索 →
 RAG → 性能工程 → 通知与审核 → Agent Runtime → Agent 安全 → 服务化与可观测。
-**当前阶段完成后停止，不提前开发下一阶段。**
+
+### 认证流程速览
+
+```sh
+BASE=http://localhost:8080/api/v1
+
+# 注册（直接返回令牌对）
+curl -s -X POST "$BASE/auth/register" -H 'Content-Type: application/json' \
+  -d '{"username":"alice","email":"alice@example.com","password":"quiet-otter-canyon-71"}'
+
+# 登录
+curl -s -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+  -d '{"identifier":"alice","password":"quiet-otter-canyon-71"}'
+
+# 带令牌访问受保护接口
+curl -s "$BASE/users/me" -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+刷新令牌**只在登录/注册/刷新的响应里出现一次**：服务端只保存它的 SHA-256，
+无法再次读出。客户端若丢失，只能重新登录 —— 这是刻意的，
+任何"服务端还能把刷新令牌取出来给你"的机制都意味着明文凭据被持久化在某个地方。
 
 ---
 
@@ -107,6 +136,7 @@ RAG → 性能工程 → 通知与审核 → Agent Runtime → Agent 安全 → 
 | 数据访问 | **官方 MyBatis** 4.1.0 | MyBatis-Plus 无 Boot 4 适配版本；本项目以显式 SQL 为主 |
 | 数据库 | MySQL 8.4 | 字符集 `utf8mb4`，连接串显式锁定时区 |
 | 迁移 | Flyway 12.4.0 | 必须引入 `spring-boot-starter-flyway`，否则迁移静默不执行 |
+| 认证 / 鉴权 | Spring Security **7.1.1** + `spring-security-oauth2-jose` | 自签 HS256 令牌。刻意**不**引入 `oauth2-resource-server`：令牌由本服务签发，需要自定义过滤器完成"账号状态 + 世代号"两级校验 |
 | API 文档 | springdoc-openapi 3.1.1 | `/swagger-ui.html` |
 | 架构断言 | ArchUnit 1.5.0 | 构建期强制模块边界 |
 | 集成测试 | Testcontainers 2.0.5 | 真实 MySQL 容器，**不用 H2** |
@@ -124,18 +154,25 @@ RAG → 性能工程 → 通知与审核 → Agent Runtime → Agent 安全 → 
 ```
 CampusHubAI/
 ├── src/main/java/ai/camphub/
-│   ├── common/            共享内核：异常、错误契约、traceId、配置
+│   ├── common/            共享内核：异常、错误契约、traceId、配置、来源 IP 解析
 │   │   ├── error/         ErrorCode · ApiError · BusinessException · GlobalExceptionHandler
-│   │   ├── web/           TraceIdFilter
-│   │   └── config/        AppProperties · OpenApiConfig
-│   └── system/            模块（四层：api / app / domain / infrastructure）
+│   │   ├── web/           TraceIdFilter · ClientIpResolver
+│   │   └── config/        AppProperties · RequestProperties · OpenApiConfig
+│   ├── system/            模块（四层：api / app / domain / infrastructure）
+│   ├── identity/          模块：账号体系与鉴权（Phase 02）
+│   │   ├── api/           AuthController · UserController + 请求/响应 DTO
+│   │   ├── app/           认证 / 账号 / 会话 / 令牌服务 · 限流器
+│   │   ├── domain/        User · UserCredential · UserPrincipal · PasswordPolicy …
+│   │   └── infrastructure/ Mapper + XML · security/（JWT 过滤器与编解码）
+│   └── platform/          平台能力：audit/（安全审计写入）
 ├── src/main/resources/
 │   ├── application.yml    基础配置（入库，不含凭据）
 │   ├── db/migration/      Flyway 迁移脚本
-│   └── mapper/            MyBatis XML
+│   ├── mapper/            MyBatis XML
+│   └── security/          常见弱密码表（启动时载入内存）
 ├── src/test/java/ai/camphub/
 │   ├── architecture/      ArchUnit 模块边界断言
-│   ├── support/           Testcontainers 与集成测试基类
+│   ├── support/           Testcontainers 与集成测试基类（含认证夹具）
 │   └── **/*IT.java        集成测试
 ├── frontend/              Vue 3 + TypeScript（独立构建）
 │   └── src/api/http.ts    与后端错误契约对齐的 HTTP 客户端
