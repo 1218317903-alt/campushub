@@ -75,9 +75,6 @@
             WHERE pt.post_id = p.id
             AND t.slug = #{tagSlug})
         </if>
-        <if test="authorId != null">
-            AND p.author_id = #{authorId}
-        </if>
     </sql>
 
     <insert id="insert">

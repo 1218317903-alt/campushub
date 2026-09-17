@@ -254,8 +254,8 @@ public class PostService {
     public Page<PostCardView> list(FeedQuery query, Long currentUserId) {
         int size = effectivePageSize(query.size());
         List<PostSummary> posts = postMapper.findSummaries(
-                query.categorySlug(), query.tagSlug(), query.authorId(), query.sort(), size, query.offset());
-        int total = postMapper.countByFilter(query.categorySlug(), query.tagSlug(), query.authorId());
+                query.categorySlug(), query.tagSlug(), query.sort(), size, query.offset());
+        int total = postMapper.countByFilter(query.categorySlug(), query.tagSlug());
 
         return Page.of(assembleCards(posts, currentUserId), query.page(), size, total);
     }

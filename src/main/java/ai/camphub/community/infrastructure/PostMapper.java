@@ -66,7 +66,6 @@ public interface PostMapper {
      *
      * @param categorySlug 板块筛选，可为 null
      * @param tagSlug      标签筛选，可为 null
-     * @param authorId     作者筛选（用于"Ta 的帖子"），可为 null
      * @param sort         排序方式，决定 {@code ORDER BY} 走哪个索引
      * @param limit        页大小
      * @param offset       偏移量
@@ -74,7 +73,6 @@ public interface PostMapper {
      */
     List<PostSummary> findSummaries(@Param("categorySlug") String categorySlug,
                                     @Param("tagSlug") String tagSlug,
-                                    @Param("authorId") Long authorId,
                                     @Param("sort") PostSort sort,
                                     @Param("limit") int limit,
                                     @Param("offset") int offset);
@@ -87,12 +85,10 @@ public interface PostMapper {
      *
      * @param categorySlug 板块筛选，可为 null
      * @param tagSlug      标签筛选，可为 null
-     * @param authorId     作者筛选，可为 null
      * @return 总数
      */
     int countByFilter(@Param("categorySlug") String categorySlug,
-                      @Param("tagSlug") String tagSlug,
-                      @Param("authorId") Long authorId);
+                      @Param("tagSlug") String tagSlug);
 
     /**
      * 分页查询某用户收藏的帖子。

@@ -10,10 +10,13 @@ import ai.camphub.community.domain.PostSort;
  * 读的人必须回去数第几个参数是什么，写的人则可能在两个同类型参数之间写反顺序 ——
  * 而这类错误编译器不会报，只会表现为"筛选条件不生效"。
  *
+ * <p>刻意<b>没有</b>作者筛选参数。做"某个人的帖子列表"需要先把对外的 public_id
+ * 解析成内部主键（那是 identity 模块的职责），而本阶段的界面上没有个人主页 ——
+ * 加一个暂时没有任何调用方的参数，只会让查询条件多一个没人验证过的分支。
+ * 需要它的时候再连同解析能力一起加。
+ *
  * @param categorySlug 板块筛选，可为 null 表示不限
  * @param tagSlug      标签筛选，可为 null 表示不限
- * @param authorId     作者筛选（用户内部主键），可为 null 表示不限。
- *                     对外的 public_id 由调用方负责解析成内部主键，这一层不认识其它标识
  * @param sort         排序方式，不会为 null
  * @param page         页码，从 1 开始，不会小于 1
  * @param size         页大小，不会小于 1
@@ -21,7 +24,6 @@ import ai.camphub.community.domain.PostSort;
 public record FeedQuery(
         String categorySlug,
         String tagSlug,
-        Long authorId,
         PostSort sort,
         int page,
         int size
@@ -36,7 +38,6 @@ public record FeedQuery(
      *
      * @param categorySlug 板块筛选，空白视为未指定
      * @param tagSlug      标签筛选，空白视为未指定
-     * @param authorId     作者内部主键
      * @param sort         排序方式；为 null 时用 {@link PostSort#LATEST}
      * @param page         页码
      * @param size         页大小
@@ -44,14 +45,12 @@ public record FeedQuery(
      */
     public static FeedQuery of(String categorySlug,
                               String tagSlug,
-                              Long authorId,
                               PostSort sort,
                               int page,
                               int size) {
         return new FeedQuery(
                 blankToNull(categorySlug),
                 blankToNull(tagSlug),
-                authorId,
                 sort == null ? PostSort.LATEST : sort,
                 Math.max(page, 1),
                 Math.max(size, 1));
