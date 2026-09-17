@@ -64,6 +64,24 @@ class DemoSeedIT extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("评论散布到每一帖：否则按时间倒序的首页会是一屏零评论")
+    void commentsShouldBeSpreadAcrossEveryPost() throws Exception {
+        HttpResponse<String> list = get("/api/v1/community/posts?size=50");
+        List<Integer> commentCounts = JsonPath.read(list.body(), "$.items[*].commentCount");
+
+        // 规模：12 帖 / 20 条评论上限。旧实现是"从第一帖开始逐帖填满再停"，
+        // 于是评论只落在最旧的 5 帖上、最新 7 帖一条都没有 —— 而帖数与评论数都对。
+        // 这里断言的是分布形状，正是那类"数量对、位置错"的缺陷唯一能被挡住的地方
+        assertThat(commentCounts)
+                .as("每一帖都应有评论：社区首页按发布时间倒序，零评论的那一段恰好是最显眼的")
+                .hasSize(12)
+                .allSatisfy(count -> assertThat(count).isPositive());
+        assertThat(commentCounts.stream().mapToInt(Integer::intValue).sum())
+                .as("内联计数列的累加应等于评论上限，说明生成的每条评论都被计数了")
+                .isEqualTo(20);
+    }
+
+    @Test
     @DisplayName("帖子详情里的正文是已渲染并净化的 HTML，摘要不含 Markdown 标记")
     void shouldSeedRenderedContent() throws Exception {
         String publicId = JsonPath.read(get("/api/v1/community/posts?size=1").body(),
