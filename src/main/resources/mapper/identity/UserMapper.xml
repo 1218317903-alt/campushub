@@ -102,6 +102,13 @@
         </foreach>
     </select>
 
+    <select id="findBriefByUsername" resultMap="UserBriefMap">
+        SELECT id, public_id, nickname, avatar_url
+        FROM `user`
+        WHERE username = #{username}
+          AND deleted_at IS NULL
+    </select>
+
     <select id="countByEmail" resultType="int">
         SELECT COUNT(*)
         FROM `user`

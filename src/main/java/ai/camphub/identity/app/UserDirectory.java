@@ -62,6 +62,32 @@ public class UserDirectory {
     }
 
     /**
+     * 按登录名查询用户的展示信息。
+     *
+     * <h2>为什么需要"按名字查"这一入口</h2>
+     * 内部主键（{@code user.id}）是本模块的私有概念，其它模块只会拿到
+     * 用户名、邮箱这类<b>它自己看得懂</b>的标识。演示数据生成器就是这样一个调用方：
+     * 它按固定规则创建了 {@code demo01} 这批账号，随后要把帖子写到这些账号名下，
+     * 于是必须把登录名换算成 {@code author_id}。
+     *
+     * <p>没有这个方法时，它只有两条路：直接读 {@code user} 表（破坏模块边界），
+     * 或者让注册接口把内部主键返回出来（把内部标识暴露到对外契约上）。
+     * 两条都比在这里多一个只读查询更糟 —— 因此这个方法的存在本身就是边界的一部分。
+     *
+     * <p>返回值仍然只有对外可见的那几个字段，不含邮箱与账号状态。
+     *
+     * @param username 登录名
+     * @return 存在时返回；账号已软删除时返回空
+     */
+    @Transactional(readOnly = true)
+    public Optional<UserBrief> findBriefByUsername(String username) {
+        if (username == null || username.isBlank()) {
+            return Optional.empty();
+        }
+        return userMapper.findBriefByUsername(username.strip());
+    }
+
+    /**
      * 批量查询用户展示信息。
      *
      * @param userIds 用户自增主键集合，可为空集合

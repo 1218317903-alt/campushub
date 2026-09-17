@@ -77,6 +77,18 @@ public interface UserMapper {
     List<UserBrief> findBriefByIds(@Param("ids") Collection<Long> ids);
 
     /**
+     * 按登录名查询用户展示信息。
+     *
+     * <p>之所以单独有这个"只取简介列"的查询，而不是复用 {@link #findByUsername}：
+     * 后者的结果集里带着邮箱与令牌世代号，把它交给调用方就等于给了对方
+     * "顺手把邮箱也返回出去"的机会。简介查询的契约就是只返回对外可见的那几个字段。
+     *
+     * @param username 登录名（区分大小写，与唯一索引一致）
+     * @return 存在时返回；账号已软删除时返回空
+     */
+    Optional<UserBrief> findBriefByUsername(@Param("username") String username);
+
+    /**
      * 统计同名用户数，用于注册前的友好提示。
      *
      * @param username 登录名
