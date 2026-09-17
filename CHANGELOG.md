@@ -16,8 +16,28 @@
 
 ### Added
 
-- 暂无（Phase 02 · Identity & Security Foundation 尚未开始）。
-  按 `docs/00-工程规约.md` §18，**当前阶段完成后停止，不提前开发下一阶段**。
+- GitHub Actions CI（`.github/workflows/ci.yml`）：后端 `mvnw verify` + 前端类型检查与构建。
+  工作流内调用的命令与本地 `make verify` 完全一致，避免"本地绿、CI 红"这类漂移。
+
+### Fixed
+
+- **`src/test/resources/testcontainers.properties` 从仓库移除。**
+  该文件把 ryuk 镜像固定为 `testcontainers/ryuk:0.11.0`，目的是绕开本机
+  Docker Hub 不可达的环境限制 —— 但它是**本机专属的环境适配**，不是项目配置。
+  留在仓库里会带来两个实际后果：所有克隆者被迫使用同一个（较旧的）ryuk 版本；
+  而 Testcontainers 已明确提示该替换机制 "deprecated and will be removed in the future"，
+  机制移除后这个文件会变成死配置，届时本机测试将静默失去这个绕行手段。
+
+  改为：环境适配写入用户级 `~/.testcontainers.properties`（不属于任何仓库），
+  仓库保持干净。能直连 Docker Hub 的机器无需任何配置。
+  已验证：移除后集成测试仍正常通过（含 ryuk 替换生效）。
+
+### Changed
+
+- `pom.xml` 中 Testcontainers 注释改为说明上述约定，不再指向已删除的仓库内文件。
+- `docs/11-开发环境.md` §7.2 补充 **Git 协议层**的实测结论（`github.com` 的
+  HTTPS `CONNECT` 被代理拒绝，`gitee.com` 与 `gitlab.com` 的 git 协议均可用），
+  并新增本机 testcontainers 用户级配置的说明；§8 清理了已解决的历史待办。
 
 ---
 
@@ -175,8 +195,11 @@
 - 数据库连接池参数（max 10）为保守起步值，**未经任何压测验证**。
   Phase 09 完成压测后按实测数据调整。
 - 尚无 CORS 配置。当前依赖 dev proxy 与同源反向代理；出现真实跨域部署形态时再配，且必须使用白名单。
-- 本机无法直连 Docker Hub，Testcontainers 的 ryuk 镜像通过镜像代理获取后打了本地 tag。
-  这是**本机环境的临时处理**，不影响仓库内容的可移植性。
+- v0.1.0 的仓库内**曾包含** `src/test/resources/testcontainers.properties`，
+  用于把 ryuk 镜像指向本地已有的 tag（绕开本机 Docker Hub 不可达）。
+  这是本机专属的环境适配，**它确实影响了仓库内容的可移植性** ——
+  所有克隆者都被固定在同一 ryuk 版本上。已在 `[Unreleased]` 中移除，
+  改为用户级 `~/.testcontainers.properties`。
 
 ---
 

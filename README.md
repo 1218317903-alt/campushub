@@ -140,8 +140,9 @@ CampusHubAI/
 ├── frontend/              Vue 3 + TypeScript（独立构建）
 │   └── src/api/http.ts    与后端错误契约对齐的 HTTP 客户端
 ├── docs/                  设计与规约文档
+├── .github/workflows/     CI（后端全量校验 + 前端类型检查与构建）
 ├── docker-compose.yml     依赖服务（当前仅 MySQL）
-├── Makefile               统一命令入口
+├── Makefile               统一命令入口（本地；CI 直接调用同一批命令）
 └── CHANGELOG.md           版本变更记录
 ```
 
