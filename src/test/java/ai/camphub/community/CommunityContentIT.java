@@ -282,6 +282,36 @@ class CommunityContentIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("排序参数不区分大小写 —— 前端按 URL 习惯发的是小写")
+        void sortShouldBeAcceptedCaseInsensitively() throws Exception {
+            TestAccount author = registerAccount(nextIp());
+            String publicId = createPost(author.tokens().access(), "排序大小写测试", "正文", List.of());
+
+            // 这里刻意**只断言"被接受"与"结果可达"，不断言全局顺序**：
+            // 集成测试共用一个容器，其他用例创建的帖子同样在结果集里，
+            // 断言"第一条就是它"会时对时错 —— 而时对时错的测试比没有测试更糟。
+            for (String value : List.of("hot", "HOT", "Hot", "latest", "LATEST")) {
+                HttpResponse<String> response =
+                        get("/api/v1/community/posts?sort=" + value + "&size=50");
+                assertThat(response.statusCode())
+                        .as("sort=%s 必须被接受：该参数会出现在用户可见的 URL 里，"
+                                + "而 Spring 对枚举的默认转换区分大小写", value)
+                        .isEqualTo(200);
+                assertThat(JsonPath.<List<String>>read(response.body(), "$.items[*].publicId"))
+                        .contains(publicId);
+            }
+        }
+
+        @Test
+        @DisplayName("无法识别的排序取值被拒绝（40002），不静默退化成默认排序")
+        void unknownSortShouldBeRejected() throws Exception {
+            HttpResponse<String> response = get("/api/v1/community/posts?sort=trending");
+
+            assertThat(response.statusCode()).isEqualTo(400);
+            assertThat(JsonPath.<Integer>read(response.body(), "$.code")).isEqualTo(40002);
+        }
+
+        @Test
         @DisplayName("不存在的板块被拒绝，错误码是社区段的 40030 而不是通用的 40000")
         void unknownCategoryShouldBeRejected() throws Exception {
             TestAccount author = registerAccount(nextIp());
