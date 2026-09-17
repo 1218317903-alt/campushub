@@ -43,4 +43,23 @@ public record PostDetail(
         Instant publishedAt,
         Instant updatedAt
 ) {
+
+    /**
+     * 返回一个浏览数被替换的副本。
+     *
+     * <p>存在的原因很具体：详情读取时服务端会记录一次浏览，若这是该用户今天第一次看，
+     * 计数已经在数据库里 +1，而手上这个对象还是自增之前读出来的。
+     * 直接把旧值返回给用户，会让他看到"我刚看完，数字还是原来的"。
+     *
+     * <p>之所以在领域记录上暴露这样一个方法，而不是让调用方重新构造 15 个字段：
+     * 重新构造的写法一旦字段增加就会漏改，而漏掉的字段不会有编译错误。
+     *
+     * @param newViewCount 新的浏览数
+     * @return 副本
+     */
+    public PostDetail withViewCount(int newViewCount) {
+        return new PostDetail(id, publicId, title, summary, bodyMd, bodyHtml,
+                categorySlug, categoryName, authorId, newViewCount, likeCount,
+                favoriteCount, commentCount, publishedAt, updatedAt);
+    }
 }

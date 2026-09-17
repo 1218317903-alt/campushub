@@ -42,6 +42,21 @@ public enum ErrorCode {
     /** identity 模块：密码不满足密码策略（长度、常见弱密码表、与账号相关性）。 */
     PASSWORD_POLICY_VIOLATION(40010, HttpStatus.BAD_REQUEST, "密码不符合安全要求"),
 
+    // ---------- 400（community 模块，Phase 03 起） ----------
+    /** community 模块：请求里给出的板块标识不存在。 */
+    CATEGORY_NOT_FOUND(40030, HttpStatus.BAD_REQUEST, "所选板块不存在"),
+    /**
+     * community 模块：帖子内容不符合要求（正文超长、标签数量超限等）。
+     *
+     * <p>与 {@link #VALIDATION_FAILED} 的分工是刻意的：
+     * 前者管"字段格式"（必填、长度上限这类由 Bean Validation 声明的结构约束），
+     * 本码管"业务策略"（上限取自配置、将来会被压测调整的那些）。
+     * 合成一个码之后，前端就无法区分"我少填了一个字段"与"我写得太长了"。
+     */
+    INVALID_POST_CONTENT(40031, HttpStatus.BAD_REQUEST, "帖子内容不符合要求"),
+    /** community 模块：标签名无法规范化为有效标识（例如整串都是标点符号）。 */
+    INVALID_TAG(40032, HttpStatus.BAD_REQUEST, "标签名不合法"),
+
     // ---------- 401 ----------
     /** 未提供凭据。用于"根本没带令牌"的情况。 */
     UNAUTHENTICATED(40100, HttpStatus.UNAUTHORIZED, "请先登录"),
