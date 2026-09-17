@@ -1,0 +1,29 @@
+# ==========================================================================
+# CampusHub AI — test profile（自动化测试）
+# ==========================================================================
+# 说明：数据源**不在此配置**。集成测试通过 Testcontainers 的 @ServiceConnection
+#      动态注入连接信息（见 src/test/java/ai/camphub/support/TestcontainersConfiguration.java），
+#      其优先级高于本文件与 .env，确保测试永远连到"本次测试自己启动的容器"，
+#      而不会误连开发者本机正在使用的数据库。
+#
+#      这一点很重要：如果测试连到开发库，一次失败的测试就可能污染真实数据。
+# ==========================================================================
+
+spring:
+  flyway:
+    # 测试库同样执行真实迁移，不跳过 —— 否则迁移脚本的错误要在部署时才发现
+    enabled: true
+
+logging:
+  level:
+    root: WARN
+    ai.camphub: INFO
+    # 打开可看到 MyBatis 执行的真实 SQL，排查测试失败原因时很有用
+    ai.camphub.system.infrastructure: INFO
+    org.testcontainers: WARN
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
