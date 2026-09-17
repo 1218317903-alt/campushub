@@ -1,0 +1,101 @@
+# ============================================================
+# CampusHub AI — Git 忽略规则
+# 依据 docs/00-工程规约.md §15.5：禁止提交 Secret / 凭据 / IDE 配置 / 日志 / 构建产物
+# ============================================================
+
+# ---------- 敏感信息（最高优先级，绝不入库）----------
+# 本地环境变量：含数据库密码等。仅提交 .env.example
+.env
+.env.local
+.env.*.local
+
+# 真实密钥
+*.pem
+*.key
+*.p12
+*.jks
+!src/test/resources/**/*.pem
+id_rsa*
+credentials.json
+service-account*.json
+
+# Spring 个人覆盖配置（可能含凭据）
+# 注意：application-local.yml 是「提交的」非密配置（只做日志级别/健康检查展示等本地增强），
+#      因此不在此忽略。个人的私有覆盖请用 application-local-<名字>.yml，会被忽略。
+src/main/resources/application-local-*.yml
+src/main/resources/application-local-*.yaml
+src/main/resources/application-local-*.properties
+src/main/resources/application-secret*.yml
+src/main/resources/application-secret*.properties
+
+# ---------- Java / Maven ----------
+target/
+!**/src/main/**/target/
+!**/src/test/**/target/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+.mvn/timing.properties
+# Maven Wrapper 的 jar 刻意不入库：`.mvn/wrapper/maven-wrapper.properties` 中声明了
+# distributionUrl / wrapperUrl，`./mvnw` 首次运行会自动下载并校验，仓库因此更干净。
+# （此前该路径同时存在一条 `!` 否定规则，属自相矛盾，已移除。）
+.mvn/wrapper/maven-wrapper.jar
+
+# ---------- Node / 前端 ----------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+frontend/stats.html
+*.tsbuildinfo
+
+# ---------- 日志 ----------
+logs/
+*.log
+!**/src/test/resources/**/*.log
+
+# ---------- IDE ----------
+.idea/
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
+*.iml
+*.ipr
+*.iws
+out/
+.vscode/
+!.vscode/settings.json.example
+*.swp
+*.swo
+
+# ---------- 操作系统 ----------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# ---------- 运行期数据 ----------
+/data/
+!/src/main/resources/data/
+uploads/
+tmp/
+*.tmp
+*.pid
+
+# ---------- 测试与覆盖率 ----------
+**/surefire-reports/
+**/failsafe-reports/
+**/jacoco.exec
+coverage/

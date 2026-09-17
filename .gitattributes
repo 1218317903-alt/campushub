@@ -1,0 +1,40 @@
+# ============================================================
+# CampusHub AI — 换行符与二进制文件约定
+# ============================================================
+# 为什么需要这个文件：
+#   不同系统默认的换行符不同。若不显式声明，Git 的自动处理会让
+#   Windows 批处理脚本（*.cmd）在某些检出配置下拿到 LF 结尾的文件 ——
+#   而 cmd.exe 对 LF-only 的批处理容错性很差，表现为"莫名其妙地不执行/报错"。
+#   这类问题只在特定机器上出现，排查成本远高于在这里写清楚。
+#
+# 规则：仓库内统一按 LF 存储；仅 Windows 原生的批处理文件使用 CRLF。
+# ============================================================
+
+# 默认：文本文件按 LF 存储与检出
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Shell 脚本与 Maven/Git 相关脚本必须 LF，否则在 Linux/macOS 上无法执行
+*.sh text eol=lf
+mvnw text eol=lf
+gradlew text eol=lf
+
+# 二进制文件：不做任何换行符转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.jar binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+
+# 锁文件与生成物：不参与 diff 统计，避免污染 review
+frontend/package-lock.json -diff linguist-generated

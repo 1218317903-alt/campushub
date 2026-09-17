@@ -1,0 +1,52 @@
+# ============================================================
+# CampusHub AI — 本地开发依赖编排
+# ============================================================
+# 用途：为「全新的机器」提供一条命令拉起依赖，保证 README 的启动步骤可复现。
+#
+# 说明（Phase 01）：
+#   · 只编排 MySQL。Redis 按 docs/12-phase-plan.md 在 **Phase 09 依据压测瓶颈**引入，
+#     MinIO 在 Phase 05 引入，Elasticsearch 在 Phase 07 引入。
+#     现在就把它们写进来，等于「依赖存在但没有正当用途」——违反 00-工程规约 §3.3。
+#   · 若本机 3306 已被占用（例如已另有一套 MySQL），用 MYSQL_PORT 改端口：
+#         MYSQL_PORT=3307 docker compose up -d
+#
+# 常用命令：见 Makefile（make up / make down / make logs）
+# ============================================================
+
+name: camphub-dev
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    ports:
+      # 只绑定本机回环地址，不对局域网暴露
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 未设置，请先 cp .env.example .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-camphub}
+      MYSQL_USER: ${MYSQL_USER:-camphub}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD 未设置，请先 cp .env.example .env}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # 显式固定时区：避免 SYSTEM 时区导致时间衰减类排序错位
+      # （见 docs/11-开发环境.md §5.1 的实测结论）
+      - --default-time-zone=+08:00
+      - --explicit_defaults_for_timestamp=ON
+    volumes:
+      - camphub-mysql-data:/var/lib/mysql
+    healthcheck:
+      # 用应用账号探测，能连上即说明库与账号都已就绪
+      test:
+        - CMD-SHELL
+        - MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u"$$MYSQL_USER" -D"$$MYSQL_DATABASE" -e 'SELECT 1' >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+volumes:
+  camphub-mysql-data:
+    name: camphub-mysql-data
