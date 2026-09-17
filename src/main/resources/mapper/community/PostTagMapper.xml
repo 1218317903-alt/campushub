@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.community.infrastructure.PostTagMapper">
+
+    <resultMap id="TagAssignmentMap" type="ai.camphub.community.domain.TagAssignment">
+        <constructor>
+            <arg column="post_id" javaType="_long"/>
+            <arg column="tag_id" javaType="_long"/>
+            <arg column="slug" javaType="java.lang.String"/>
+            <arg column="name" javaType="java.lang.String"/>
+        </constructor>
+    </resultMap>
+
+    <!-- 批量插入：一条 INSERT 带多组 VALUES。
+         逐条插入在"编辑时重建标签关联"这个场景下会产生 2N 次往返（先删后插），
+         而批量只需 2 次。 -->
+    <insert id="insertBatch">
+        INSERT INTO post_tag (post_id, tag_id)
+        VALUES
+        <foreach collection="tagIds" item="tagId" separator=",">
+            (#{postId}, #{tagId})
+        </foreach>
+    </insert>
+
+    <delete id="deleteByPostId">
+        DELETE FROM post_tag
+        WHERE post_id = #{postId}
+    </delete>
+
+    <select id="findByPostIds" resultMap="TagAssignmentMap">
+        SELECT pt.post_id, pt.tag_id, t.slug, t.name
+        FROM post_tag pt
+        JOIN tag t ON t.id = pt.tag_id
+        WHERE pt.post_id IN
+        <foreach collection="postIds" item="postId" open="(" separator="," close=")">
+            #{postId}
+        </foreach>
+        ORDER BY pt.post_id, t.id
+    </select>
+
+</mapper>

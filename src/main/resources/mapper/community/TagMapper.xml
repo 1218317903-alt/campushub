@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.community.infrastructure.TagMapper">
+
+    <!-- javaType 必须用 _long / _int（原始类型别名），理由见 CategoryMapper.xml 的注释 -->
+    <resultMap id="TagMap" type="ai.camphub.community.domain.Tag">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="slug" javaType="java.lang.String"/>
+            <arg column="name" javaType="java.lang.String"/>
+            <arg column="post_count" javaType="_long"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="tagWithCount">
+        SELECT t.id,
+               t.slug,
+               t.name,
+               COUNT(p.id) AS post_count
+        FROM tag t
+                 LEFT JOIN post_tag pt ON pt.tag_id = t.id
+                 LEFT JOIN post p ON p.id = pt.post_id AND p.deleted_at IS NULL
+    </sql>
+
+    <!-- 排序：使用次数多的在前；同次数按 id 升序，保证分页/多次调用结果稳定
+         （没有 ORDER BY 的稳定兜底时，同分行的顺序由执行计划决定，会出现"刷新一次换个样"） -->
+    <select id="findMostUsed" resultMap="TagMap">
+        <include refid="tagWithCount"/>
+        GROUP BY t.id, t.slug, t.name
+        ORDER BY post_count DESC, t.id
+        LIMIT #{limit}
+    </select>
+
+    <select id="findBySlug" resultMap="TagMap">
+        <include refid="tagWithCount"/>
+        WHERE t.slug = #{slug}
+        GROUP BY t.id, t.slug, t.name
+    </select>
+
+    <select id="findBySlugs" resultMap="TagMap">
+        <include refid="tagWithCount"/>
+        WHERE t.slug IN
+        <foreach collection="slugs" item="slug" open="(" separator="," close=")">
+            #{slug}
+        </foreach>
+        GROUP BY t.id, t.slug, t.name
+    </select>
+
+    <!-- 不写 INSERT IGNORE：撞唯一键需要被调用方知道，以便改走"查已有记录"的分支。
+         用 IGNORE 静默跳过的话，调用方会拿到 0 行影响数却不知道该复用哪一行。 -->
+    <insert id="insert">
+        INSERT INTO tag (slug, name)
+        VALUES (#{slug}, #{name})
+    </insert>
+
+</mapper>

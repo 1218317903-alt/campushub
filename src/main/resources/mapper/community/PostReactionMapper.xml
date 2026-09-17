@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.community.infrastructure.PostReactionMapper">
+
+    <!-- 普通 INSERT，刻意**不**用 IGNORE：
+         IGNORE 会把重复键之外的问题（外键不存在、值超长）一并吞成警告，
+         于是"给一条不存在的帖子点赞"这类真实缺陷会静默消失。
+         只让重复键这一个异常传出去，由调用方按"已处于该状态"处理 —— 精确捕获。 -->
+    <insert id="insert">
+        INSERT INTO post_reaction (user_id, post_id, type)
+        VALUES (#{userId}, #{postId}, #{type})
+    </insert>
+
+    <delete id="delete">
+        DELETE FROM post_reaction
+        WHERE user_id = #{userId}
+          AND post_id = #{postId}
+          AND type = #{type}
+    </delete>
+
+    <!-- 只返回帖子 id：调用方只需要知道"在不在集合里"，
+         返回完整明细行会多构造一批用不上的对象。 -->
+    <select id="findReactedPostIds" resultType="java.lang.Long">
+        SELECT post_id
+        FROM post_reaction
+        WHERE user_id = #{userId}
+          AND type = #{type}
+          AND post_id IN
+        <foreach collection="postIds" item="postId" open="(" separator="," close=")">
+            #{postId}
+        </foreach>
+    </select>
+
+</mapper>
