@@ -1,0 +1,129 @@
+# ==========================================================================
+# CampusHub AI — 基础配置
+# ==========================================================================
+# 约定（docs/00-工程规约.md §15.5）：
+#   · 本文件**提交入库**，因此绝不写任何真实凭据
+#   · 所有可能含密的项一律用 ${ENV_VAR:安全默认值} 形式从环境变量注入
+#   · 本地开发可 cp .env.example .env，Spring 会自动导入（见下方 spring.config.import）
+# ==========================================================================
+
+spring:
+  application:
+    name: camphub
+
+  # 让 .env 文件（已被 .gitignore 忽略）无需手工 source 即可生效，
+  # 这样命令行、IDEA、测试三种启动方式读到的配置完全一致。
+  # optional: 前缀保证没有 .env 时也能正常启动。
+  config:
+    import: optional:file:./.env[.properties]
+
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+  datasource:
+    # 关键点：显式指定连接时区。
+    # MySQL 默认 time_zone=SYSTEM（见 docs/11-开发环境.md §5.1 实测），若不在连接串里固定，
+    # 容器时区与 JVM 时区不一致时，"发布时间/时间衰减排序"会出现整体偏移。
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:camphub}?useUnicode=true&characterEncoding=utf8&connectionTimeZone=Asia/Shanghai&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false&rewriteBatchedStatements=true
+    username: ${MYSQL_USER:camphub}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      # 起步值刻意保守。Phase 09 压测拿到真实数据后再调整，
+      # 现在就调大只是把问题往后推，并掩盖真实瓶颈。
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      pool-name: camphub-hikari
+      connection-timeout: 10000
+      validation-timeout: 3000
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 不使用 baseline-on-migrate：它会让"库结构不符合预期"被静默跳过，
+    # 属于把配置错误伪装成正常运行。宁可启动失败也不要静默错位。
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    # 已发布的迁移脚本禁止修改（docs/00-工程规约.md §15.8），
+    # 校验和检查会在这里帮我们拦住这种改动。
+    clean-disabled: true
+
+  # HTTP 请求体大小上限：Phase 05 之前没有文件上传，保守设置
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    # 不把 Spring 默认错误响应的细节暴露出去；错误统一由 GlobalExceptionHandler 产出
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+
+# ---------------------------------------------------------------------------
+# MyBatis
+# ---------------------------------------------------------------------------
+mybatis:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    # 主要为了日志里能看到真实执行的 SQL 与参数，便于 Phase 09 的慢 SQL 定位
+    map-underscore-to-camel-case: true
+    default-fetch-size: 100
+    default-statement-timeout: 30
+
+# ---------------------------------------------------------------------------
+# 应用自定义配置
+# ---------------------------------------------------------------------------
+app:
+  name: ${APP_NAME:camphub}
+  version: ${APP_VERSION:0.1.0}
+
+# ---------------------------------------------------------------------------
+# 健康检查 / 监控端点
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # 只开必要端点。放开 * 会把内部信息（beans/env/heapdump）暴露成攻击面。
+        include: health,info
+  endpoint:
+    health:
+      # 默认不对外展示依赖细节（会暴露拓扑），local profile 中放开
+      show-details: never
+      probes:
+        enabled: true
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${app.name}
+    version: ${app.version}
+
+# ---------------------------------------------------------------------------
+# 日志
+# ---------------------------------------------------------------------------
+logging:
+  pattern:
+    # %X{traceId} 由 TraceIdFilter 写入 MDC。
+    # 有它才能用用户报来的一个 ID 捞出该请求的全部日志。
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{traceId:-no-trace}] %logger{40} - %msg%n"
+  level:
+    root: INFO
+    ai.camphub: INFO
+
+# ---------------------------------------------------------------------------
+# API 文档（springdoc）
+# ---------------------------------------------------------------------------
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha

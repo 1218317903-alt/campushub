@@ -1,0 +1,33 @@
+# ==========================================================================
+# CampusHub AI — local profile（本地开发增强）
+# ==========================================================================
+# ⚠️ 本文件**会提交入库**，因此只允许放「非密」的本地开发增强项：
+#     日志级别、健康检查展示、SQL 可见性、文档开关。
+#     **绝不**在这里写密码、Key、Token —— 那些只能通过环境变量 /.env 注入。
+#
+# 个人私有覆盖请用 application-local-<你的名字>.yml（已被 .gitignore 忽略）。
+#
+# 启用方式：SPRING_PROFILES_ACTIVE=local（application.yml 中已是默认值）
+# ==========================================================================
+
+management:
+  endpoint:
+    health:
+      # 本地开发需要立刻看到 DB/磁盘等依赖状态，放开细节；
+      # 生产 profile 保持 never（application.yml 的默认值）
+      show-details: always
+
+logging:
+  level:
+    # 自己写的代码本地全量 DEBUG，方便边写边看
+    ai.camphub: DEBUG
+    # MyBatis 在 mapper 所在包的 logger 下输出 SQL 与参数，
+    # 把 mapper 包调到 DEBUG 才能看到真实 SQL（Phase 09 定位慢查询的前提）
+    ai.camphub.system.infrastructure: DEBUG
+
+springdoc:
+  # 本地开启文档交互界面；生产 profile 应关闭（见 application-prod.yml 规划）
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
