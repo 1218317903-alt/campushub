@@ -79,7 +79,13 @@ mybatis:
 # ---------------------------------------------------------------------------
 app:
   name: ${APP_NAME:camphub}
-  version: ${APP_VERSION:0.1.0}
+  # 版本号来源：Maven 资源过滤把 @project.version@ 替换为 pom.xml 里的 <version>。
+  # （spring-boot-starter-parent 已为 application*.yml 打开过滤，分隔符是 @ 而不是 ${}，
+  #   因此本文件里其他 ${ENV:default} 占位不会被 Maven 误替换。）
+  # 仍然保留环境变量覆盖能力（APP_VERSION），用于在镜像/编排层面标注构建来源。
+  # **不要在这里写死版本号** —— 写死的结果是 /api/v1/system/info 报出的版本
+  # 与真实发布的版本长期不一致（Phase 02 收尾时就踩到过这一点）。
+  version: ${APP_VERSION:@project.version@}
 
   # -------------------------------------------------------------------------
   # 身份与安全（Phase 02）

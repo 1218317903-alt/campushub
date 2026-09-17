@@ -36,7 +36,19 @@ class SystemInfoIT extends AbstractIntegrationTest {
 
         String body = response.body();
         assertThat(JsonPath.<String>read(body, "$.application")).isEqualTo("camphub");
-        assertThat(JsonPath.<String>read(body, "$.version")).isEqualTo("0.1.0");
+
+        // 刻意**不**断言具体版本号：写死版本号的断言会在每次升版时被顺手改成新值，
+        // 于是它永远通过，也就永远发现不了"报出的版本与 pom 里的版本不一致"这个真实故障
+        // （Phase 02 收尾时确实漂移过：pom 是 0.1.0-SNAPSHOT，发布标签已经是 v0.2.0）。
+        // 这里改断言"版本号是解析后的真实值"这个不变量：
+        // 占位符未被 Maven 资源过滤替换时，值会是字面量 @project.version@，含 '@'。
+        String version = JsonPath.read(body, "$.version");
+        assertThat(version)
+                .as("版本号必须由 Maven 资源过滤从 pom.xml 注入，而不是残留的占位符")
+                .isNotBlank()
+                .doesNotContain("@")
+                .matches("\\d+\\.\\d+\\.\\d+.*");
+
         assertThat(JsonPath.<String>read(body, "$.profiles")).contains("test");
         assertThat(JsonPath.<String>read(body, "$.javaVersion")).startsWith("21");
 
