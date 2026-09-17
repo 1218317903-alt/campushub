@@ -79,18 +79,29 @@ public final class PasswordPolicy {
             problems.add("密码过长：按 UTF-8 计算不得超过 " + BCRYPT_MAX_BYTES + " 字节（当前 " + bytes + " 字节）");
         }
 
-        String lower = password.toLowerCase(Locale.ROOT);
+        // 首尾空白在视觉上不可见，却会改变哈希结果，于是制造出一个支持上无解的局面：
+        // 用户认为自己设的是 "password123"，实际设的是 " password123 "，
+        // 之后无论怎么"照原样输入"都可能对不上。这里明确拒绝，而不是静默 trim ——
+        // 静默修改用户的凭据是更糟的选择：他会发现"密码被别人改过了"。
+        boolean hasSurroundingWhitespace = !password.equals(password.strip());
+        if (hasSurroundingWhitespace) {
+            problems.add("密码不能以空白字符（空格、制表符等）开头或结尾");
+        }
 
-        if (commonPasswords.contains(lower)) {
+        // 比对用"去掉首尾空白"后的形式：否则 "  password123  " 就成了绕过弱密码表的手段 ——
+        // 而攻击字典的第一条规则正是"在候选词前后补上常见字符"。
+        String comparable = password.toLowerCase(Locale.ROOT).strip();
+
+        if (commonPasswords.contains(comparable)) {
             problems.add("该密码出现在常见弱密码列表中，请更换");
         }
 
         String normalizedUsername = username == null ? "" : username.trim().toLowerCase(Locale.ROOT);
         if (!normalizedUsername.isEmpty()) {
-            if (lower.equals(normalizedUsername)) {
+            if (comparable.equals(normalizedUsername)) {
                 problems.add("密码不能与登录名相同");
             } else if (normalizedUsername.length() >= MIN_SUBSTRING_CHECK_LENGTH
-                    && lower.contains(normalizedUsername)) {
+                    && comparable.contains(normalizedUsername)) {
                 problems.add("密码不能包含登录名");
             }
         }
@@ -98,7 +109,7 @@ public final class PasswordPolicy {
         String emailLocalPart = localPartOf(email);
         if (!emailLocalPart.isEmpty()
                 && emailLocalPart.length() >= MIN_SUBSTRING_CHECK_LENGTH
-                && lower.contains(emailLocalPart)) {
+                && comparable.contains(emailLocalPart)) {
             problems.add("密码不能包含邮箱用户名");
         }
 
