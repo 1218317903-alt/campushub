@@ -1,4 +1,4 @@
-package ai.camphub.identity.infrastructure.security;
+package ai.camphub.identity.app;
 
 import ai.camphub.common.config.RequestProperties;
 import ai.camphub.common.error.RateLimitedException;
@@ -20,6 +20,15 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  * 不是"性能保护"，而是<b>凭据攻击的成本抬升</b>：没有它，攻击者可以在一台机器上
  * 每分钟尝试数万次密码。加上"同一来源每分钟 10 次"之后，同样的尝试需要极长时间，
  * 攻击从"可行"变成"不划算"。
+ *
+ * <h2>为什么放在应用层（{@code identity.app}）而不是基础设施层</h2>
+ * 它被 {@code AuthController} 直接调用，而架构规则禁止 API 层依赖
+ * {@code ..infrastructure..}（控制器必须经应用服务访问数据，否则会绕过权限与事务边界）。
+ * 更根本的理由是：限流是<b>业务策略</b>（"登录每分钟 10 次"是产品决策），
+ * 不是对外部系统的适配。它之所以放在 {@code infrastructure} 被误认为合适，
+ * 只是因为实现里用了内存 Map —— 但"用内存还是 Redis"是实现细节，
+ * 换成 Redis 之后这条规则依然成立。因此它属于应用层，
+ * 请勿因为"以后要接 Redis"而把它挪回基础设施层。
  *
  * <h2>三个必须说清楚的局限</h2>
  * <ol>
