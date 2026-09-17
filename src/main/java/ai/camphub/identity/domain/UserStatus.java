@@ -25,6 +25,19 @@ public enum UserStatus {
     DISABLED;
 
     /**
+     * 该状态是否允许通过认证。
+     *
+     * <p>放在枚举上而不是散在各个调用点写 {@code status == ACTIVE}：
+     * "哪些状态可以登录"是状态本身的语义，将来若新增状态（例如"待验证"），
+     * 只需要在这里回答一次，而不会漏掉某个忘了改的判断。
+     *
+     * @return 仅 {@link #ACTIVE} 返回 true
+     */
+    public boolean isActive() {
+        return this == ACTIVE;
+    }
+
+    /**
      * 解析数据库中存储的状态字符串。
      *
      * <p>遇到未知值直接抛异常而不是回退到某个默认值：数据库里出现无法识别的状态，

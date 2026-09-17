@@ -47,6 +47,6 @@ public record User(
      * @return 仅 {@link UserStatus#ACTIVE} 返回 true
      */
     public boolean isActive() {
-        return status == UserStatus.ACTIVE;
+        return status.isActive();
     }
 }
