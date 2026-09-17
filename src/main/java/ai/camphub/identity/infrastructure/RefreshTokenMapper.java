@@ -48,6 +48,23 @@ public interface RefreshTokenMapper {
     Optional<RefreshTokenRecord> findById(@Param("id") long id);
 
     /**
+     * 查询由某个令牌轮换而来的后继令牌。
+     *
+     * <p>用途是区分两种"旧令牌被再次使用"：
+     * <ul>
+     *   <li><b>同一个客户端在极短时间内重复提交</b>（多标签页同时刷新）——
+     *       后继令牌刚刚才签发，属于正常并发，不应判定为泄露；</li>
+     *   <li><b>攻击者持有早已被替换掉的旧令牌</b> —— 后继令牌或是早已撤销，
+     *       或是签发时间久远，属于确凿的泄露信号。</li>
+     * </ul>
+     * 这两种情形在数据上的区别就是"后继令牌是否存在、是否仍有效、多久之前签发"。
+     *
+     * @param rotatedFrom 前驱令牌 ID
+     * @return 存在时返回最近一条后继令牌
+     */
+    Optional<RefreshTokenRecord> findLatestByRotatedFrom(@Param("rotatedFrom") long rotatedFrom);
+
+    /**
      * 撤销单个令牌。
      *
      * <p>条件里带 {@code revoked_at IS NULL}：重复撤销不会覆盖首次撤销时间。

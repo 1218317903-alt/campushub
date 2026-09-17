@@ -44,7 +44,9 @@ import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWrite
  *
  * <h2>公开端点清单（每一项都需要理由）</h2>
  * <ul>
- *   <li>{@code /api/v1/auth/register|login|refresh}：登录前必须能访问，否则无法登录。</li>
+ *   <li>{@code /api/v1/auth/register|login|refresh|logout}：登录前必须能访问，否则无法登录；
+ *       登出同样公开，理由见 {@code AuthController} 的类注释（持有刷新令牌即授权，
+ *       要求访问令牌有效会制造"令牌过期后无法登出"的死角）。</li>
  *   <li>{@code /api/v1/system/info}：只暴露版本号与 schema 基线，Phase 01 已定义其公开契约。</li>
  *   <li>{@code /actuator/health|info}：健康检查供编排系统与负载均衡探活，不能要求凭据。</li>
  *   <li>{@code /v3/api-docs|/swagger-ui}：本地开发需要。**生产环境不靠这里的规则隐藏它**，
@@ -112,7 +114,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/auth/register",
                                 "/api/v1/auth/login",
-                                "/api/v1/auth/refresh").permitAll()
+                                "/api/v1/auth/refresh",
+                                // 登出也要公开：它撤销的是刷新令牌，而"持有刷新令牌"本身就是授权。
+                                // 若要求访问令牌有效，就会出现"访问令牌刚过期、想登出却被 401 拦住"的死角，
+                                // 用户在这种状态下唯一能做的就是放任那个会话继续有效。
+                                "/api/v1/auth/logout").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/system/info").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
