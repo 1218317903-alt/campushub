@@ -13,7 +13,8 @@ import jakarta.servlet.http.HttpServletRequest;
  *
  * <p>因此本类的策略是<b>默认不信任这些头</b>，直接用 Servlet 容器的 {@code remoteAddr}。
  * 只有在确认部署于可信代理之后（由代理负责重写而非追加该头），
- * 才通过配置 {@code app.security.trust-forwarded-headers=true} 开启。
+ * 才通过配置 {@code app.request.trust-forwarded-headers=true} 开启
+ * （见 {@link ai.camphub.common.config.RequestProperties}）。
  *
  * <p>开启时取 {@code X-Forwarded-For} 的<b>最左</b>一项 —— 它代表最初发起请求的客户端。
  * 注意：这一项恰恰也是最容易被伪造的一段，所以可信代理必须**重写**而不是追加该头，
