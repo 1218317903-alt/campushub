@@ -72,7 +72,7 @@
 3. **`identity` 是纯依赖方**，任何模块都可只读引用，但没人反过来依赖业务模块。
 4. **跨模块写操作只用领域事件**（`PostPublished`、`DocumentReady`、`VerdictIssued`…），事件经 `outbox_event` 表保证可靠投递。
 5. **同步调用只用于读路径**（要立刻拿到结果），写路径与副作用一律异步。
-6. **ArchUnit 固化以上规则**，违反即 CI 失败（这是可验证的工程实践，写进简历也站得住）。
+6. **ArchUnit 固化以上规则**，违反即 CI 失败 —— 让"架构边界"从文档里的一句约定，变成构建期不可绕过的约束。
 
 ### 7.4 模块内分层（每个模块都是这个形状）
 
@@ -104,8 +104,8 @@ com.campushub.<module>
 
 | 层 | 选择 | 主要备选 | 选它的理由 | 明确付出的代价 |
 |---|---|---|---|---|
-| 语言/运行时 | **Java 21** | Kotlin / Go | 虚拟线程（Loom）让高并发 IO 大幅简化；Spring 生态最完整；招聘市场匹配度高 | 启动慢、内存占用高（用 CDS + GraalVM 可选优化） |
-| 应用框架 | **Spring Boot 3.5** | Quarkus / Micronaut | Spring AI / Security / Data 生态一体化 | 魔法多，需要靠 ArchUnit + 显式配置约束 |
+| 语言/运行时 | **Java 21** | Kotlin / Go | 虚拟线程（Loom）让高并发 IO 大幅简化；JVM 生态的库、运维与故障排查工具链最完整 | 启动慢、内存占用高（用 CDS + GraalVM 可选优化） |
+| 应用框架 | **Spring Boot 4.1.1** | Quarkus / Micronaut | Spring Security / Data / 测试支持一体化，且本项目所需能力均在一等公民范围内 | 约定优于配置带来"看不见的行为"，需要靠 ArchUnit + 显式配置把边界重新显性化 |
 | Web | Spring MVC（虚拟线程模式） | WebFlux | 本项目瓶颈在 DB/LLM 而非线程；虚拟线程已能支撑高并发阻塞式调用；**响应式带来的心智成本远超收益** | 极端长连接场景需谨慎 |
 | 持久层 | **MyBatis-Plus** + 手写复杂 SQL | JPA / JOOQ | SQL 完全可控（性能优化与压测演示需要精细 SQL）；避免 JPA 的 N+1 与懒加载陷阱 | 需要手写更多样板代码 |
 | 主库 | **MySQL 8.0** | PostgreSQL | 生态与运维熟悉度；JSON 列 + 全文索引足够兜底 | 向量/全文能力弱于 PG（所以把这两件事交给 ES） |
