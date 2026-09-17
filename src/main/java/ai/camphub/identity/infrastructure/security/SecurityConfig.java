@@ -48,6 +48,9 @@ import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWrite
  *       登出同样公开，理由见 {@code AuthController} 的类注释（持有刷新令牌即授权，
  *       要求访问令牌有效会制造"令牌过期后无法登出"的死角）。</li>
  *   <li>{@code /api/v1/system/info}：只暴露版本号与 schema 基线，Phase 01 已定义其公开契约。</li>
+ *   <li>社区的几个 GET：板块、标签、帖子列表与详情、一级评论、回复列表。理由是产品性的 ——
+ *       一个必须先注册才能看到内容的社区对新访客等于没有内容。注意这里<b>逐条列出</b>而不是
+ *       放行 {@code /api/v1/community/**}：后者会连同 {@code /me/favorites} 一起放行。</li>
  *   <li>{@code /actuator/health|info}：健康检查供编排系统与负载均衡探活，不能要求凭据。</li>
  *   <li>{@code /v3/api-docs|/swagger-ui}：本地开发需要。**生产环境不靠这里的规则隐藏它**，
  *       而是把 {@code springdoc.api-docs.enabled} 设为 false —— 端点直接 404 比"返回 401"
@@ -120,6 +123,19 @@ public class SecurityConfig {
                                 // 用户在这种状态下唯一能做的就是放任那个会话继续有效。
                                 "/api/v1/auth/logout").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/system/info").permitAll()
+                        // 社区的读接口公开：浏览内容不需要登录。
+                        // 逐条列出而不是放行整个 /api/v1/community/**，是因为后者会连同
+                        // /api/v1/community/me/favorites 一起放行 —— 那条路径没有登录态时
+                        // 根本取不到用户，但放行它意味着访问控制失效在前、空指针在后。
+                        // 这些端点仍会读取令牌（若携带），因此带登录态浏览时
+                        // liked / favorited / ownedByMe 有正确取值。
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/community/categories",
+                                "/api/v1/community/tags",
+                                "/api/v1/community/posts",
+                                "/api/v1/community/posts/*",
+                                "/api/v1/community/posts/*/comments",
+                                "/api/v1/community/comments/*/replies").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .requestMatchers("/error").permitAll()

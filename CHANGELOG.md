@@ -18,6 +18,159 @@ _尚无未发布变更。_
 
 ---
 
+## [0.3.0] - 2026-09-17
+
+Phase 03 — Community MVP & Bootstrap。引入社区内容域（帖子 · 板块 · 标签 · 评论 · 回复 ·
+点赞 · 收藏 · 浏览）、一份"从零部署即有内容"的合成演示数据，以及前端社区全部页面与登录态。
+
+> 本阶段**仍然只使用 MySQL**：没有缓存、没有消息队列。基线数据（`docs/experiments/EX-000-query-baseline.md`）
+> 显示读取路径还没到需要缓存的程度，而"先加缓存再看效果"会让人无法判断瓶颈原本在哪。
+
+### Added
+
+- **`V3__community.sql` 迁移**：7 张表 —— `category` · `tag` · `post` · `post_tag` · `comment` ·
+  `post_reaction` · `post_view_daily`。几个非显然的决定：
+  - `post` 同时存 `body_md`（**编辑的事实来源**）与 `body_html`（写入时渲染并净化的结果，
+    读路径直接返回），另有 `summary` 由写入时从原文派生 —— 因此**列表页不需要读 `MEDIUMTEXT` 正文**。
+    取舍与复核条件见 `docs/adr/0005`。
+  - **互动幂等由主键强制**：`post_reaction` 主键为 `(user_id, post_id, type)`，
+    重复点赞不可能写出第二行；`ReactionService` 捕获 `DuplicateKeyException` 判断"是否真的新增"，
+    只有真的新增才 `+1`。计数的正确性因此不依赖业务代码的判断。
+  - **评论严格两层**，`parent_id` 自引用 + `ON DELETE CASCADE`；**刻意不存 `root_id`**
+    （在两层约束下它与"回复的 `parent_id`"恒等）。层级规则只能由服务层保证并由集成测试钉住。
+  - **浏览计数分两张表**：`post_view_daily` 明细负责按天去重，汇总落 `post.view_count`。
+  - **帖子索引不带 `deleted_at` 条件**：它作为末列无助于过滤、作为首列会破坏有序扫描，
+    而正常运营下删除率是个位数百分比。等删除率真的变高再调整，而不是先加一列。
+- **`V4__schema_baseline_marker.sql` 迁移**：把 `app_metadata.schema.baseline` 修正到当前迁移版本。
+  V1 写入了 `V1` 之后，V2 与 V3 都忘了更新它 —— 于是库结构已到 V3，`/api/v1/system/info`
+  仍然报 `V1`。这个端点存在的意义就是"部署后一个请求确认迁移已生效"，
+  而一个恒为 `V1` 的值不但做不到这件事，还会给出一个**看起来正常**的错误结论。
+- **community 模块**：
+  - 领域：`Post` · `PostSummary` · `PostDetail` · `Comment` · `Category` · `Tag` · `TagAssignment` ·
+    `MarkdownRenderer`（commonmark + OWASP Java HTML Sanitizer）· `Slugifier` · `PostSort`
+  - 应用：`PostService` · `CommentService` · `ReactionService` · `TagService`
+  - 接口：`PostController` · `CommentController` · `CommunityController` · `PostSortConverter` ·
+    `PageResponse` · `CurrentUser`
+- **`bootstrap` 组装点**：`DemoSeedRunner` · `DemoContentLibrary` · `DemoSeedProperties` ·
+  `DemoCommentPlan`（评论数量在帖子之间的分配规则）。
+  演示数据**只调用各模块的公开应用服务**（注册 / 发帖 / 评论 / 点赞），不直接写表 ——
+  因此密码会被真正哈希、Markdown 会被真正净化、审计会被真正记录，
+  演示数据与真实用户走的是同一条代码路径。默认关闭、拒绝在 `prod` profile 下执行、
+  按"库里有没有帖子"判断幂等。规模由 `app.demo-seed.*` 配置。
+- **HTTP 接口**（`/api/v1/community`）：
+
+  | 方法 | 路径 | 公开 | 说明 |
+  |---|---|---|---|
+  | GET | `/categories` | ✅ | 板块列表 |
+  | GET | `/tags` | ✅ | 热门标签（按被引用帖子数倒序，最多 20 个） |
+  | GET | `/posts` | ✅ | 帖子列表；支持板块/标签筛选、`latest`/`hot` 排序、分页 |
+  | GET | `/posts/{publicId}` | ✅ | 详情；带令牌访问记录一次浏览（同用户同天只计一次） |
+  | POST | `/posts` | — | 发布 |
+  | PUT | `/posts/{publicId}` | — | 编辑（仅作者） |
+  | DELETE | `/posts/{publicId}` | — | 删除（软删除，仅作者） |
+  | GET | `/posts/{publicId}/comments` | ✅ | 顶层评论列表 |
+  | POST | `/posts/{publicId}/comments` | — | 发表评论或回复 |
+  | POST / DELETE | `/posts/{publicId}/like` | — | 点赞 / 取消（幂等，返回操作后的状态与计数） |
+  | POST / DELETE | `/posts/{publicId}/favorite` | — | 收藏 / 取消（幂等） |
+  | GET | `/comments/{publicId}/replies` | ✅ | 某条顶层评论的回复 |
+  | DELETE | `/comments/{publicId}` | — | 删除评论（软删除，仅作者；顶层评论连带删除其回复） |
+  | GET | `/me/favorites` | — | 我收藏的帖子 |
+
+- **前端**：社区信息流（筛选条件放 URL）、帖子详情、发布 / 编辑、我的收藏、登录与注册（同页）；
+  `auth` store 与 `http.ts` 的"令牌过期 → 刷新 → 重试一次"链路；`PostCardItem` ·
+  `CommentThread` · `PasswordInput` 组件；`utils/datetime` · `utils/form`。
+  全部视图为路由级懒加载。
+- **`scripts/bench/query-baseline.mjs`**：可复现的社区只读接口延迟测量脚本
+  （Node，无第三方依赖，Windows 可跑）。结果见 `docs/experiments/EX-000-query-baseline.md`。
+- **`docs/adr/0004`**（计数内联而非拆 `content_stats`）与 **`docs/adr/0005`**（内容渲染与净化边界）。
+
+### Changed
+
+- **安全配置改为逐条放行社区 GET 端点**，而不是放行 `/api/v1/community/**`。
+  后者会让"以后新增的接口"默认就是公开的 —— 新增接口默认应当需要认证。
+- **修正 `application.yml` 中 `community:` 与 `request:` 两个配置块的缩进层级。**
+  它们此前写在**顶层**，而属性类前缀是 `app.community` / `app.request`，
+  于是这些配置**全部静默失效**：应用照常启动、测试照常全绿。
+  其中 `request:` 块整块都是 `${APP_TRUST_FORWARDED_HEADERS:false}` 这类安全开关，
+  失效后的表现是"限流在反向代理之后把所有请求都算在同一个代理 IP 上"。
+  根因是 record 的构造函数绑定在属性缺失时不报错，"写错位置"与"本来就没打算配"在运行时完全一样。
+  配套新增 `ApplicationConfigStructureTest`（解析 `application.yml` 并断言键的层级），
+  且已反向验证：还原成修复前的 yml 会报 11 个缺失键。
+- **版本号改为单一来源。** 此前 pom 的 `<version>` 只用于 Maven 自身，而"应用对外报出的版本"
+  其实硬编码在 `application.yml` 里 —— `v0.2.0` 发布时 pom 写着 `0.1.0-SNAPSHOT`、
+  接口报的却是另一个数，两处可以各自漂移且都不会失败。现在 `application.yml` 通过资源过滤
+  引用 `@project.version@`，pom 成为唯一来源；仍保留 `APP_VERSION` 环境变量覆盖，
+  用于在镜像/编排层标注构建来源。发布态收敛为 `0.3.0`（不带 `-SNAPSHOT`），
+  下一次开发再改为下一版本的 `-SNAPSHOT`。前端 `package.json` 同步为 `0.3.0`。
+
+### Fixed
+
+- **`?sort=hot` / `?sort=latest` 返回 400。** `PostController` 的 Javadoc 写明"取值不区分大小写"，
+  实现却直接把 `PostSort` 枚举当作 `@RequestParam` 的类型，而 Spring 对枚举的默认转换**区分大小写**。
+  后果是前端**所有带排序的列表请求都会失败**。修复为注册 `PostSortConverter`；
+  非法取值仍被拒绝（`40002`），不静默退化为默认排序。
+  这个缺陷此前没有任何测试覆盖到（集成测试里一次都没出现过 `sort` 参数）——
+  它只在"启动真实服务、按前端实际发出的 URL 请求"时才暴露。
+- **`/api/v1/system/info` 的 `schemaBaseline` 长期报 `V1`**（库已到 V3）：见上面的 V4 迁移。
+  同时把 `SystemInfoIT` 里硬编码的 `EXPECTED_SCHEMA_BASELINE = "V1"` 改为
+  "与迁移脚本里的最新版本比对" —— 写死常量的断言会在升版时被顺手改掉，
+  于是它永远通过，也就永远发现不了标记漂移。
+- **`AuthFlowIT#me_withTamperedToken_returnsTokenInvalid` 是概率性通过。**
+  它篡改的是令牌签名段的**最后一个字符**，而 HS256 的 32 字节签名经 base64url 无填充编码后是
+  43 个字符（258 位，只比 256 位多 2 位）—— **最后一个字符的低 2 位是解码时被忽略的填充位**，
+  把 `A` 改成 `B` 恰好只动了最低位，解码出来的签名与原签名完全相同，令牌依然有效。
+  实测 2000 次随机签名：改末字符有 **6.40%** 概率篡改无效（理论值 4/64 = 6.25%），改首字符 0/2000。
+  改为篡改签名段的第一个字符，并把这个原因写进注释。
+- **演示数据的评论全部堆在最旧的那一段帖子上。** 生成器原本"从第一帖开始逐帖填评论，
+  填满 `comment-count` 上限就停"，于是 2000 帖 / 4000 评论的规模下只有最早的 1000 帖有评论。
+  而首页按发布时间**倒序**，最显眼的位置恰好是一屏零评论 0 互动的帖子 ——
+  看起来像个死社区。这个后果不影响任何既有断言：帖数对、评论数对、账号能登录。
+  改为由 `DemoCommentPlan` 按 `⌊(i+1)·C/P⌋ − ⌊i·C/P⌋` 均匀摊开（总和严格等于上限、
+  任意两帖相差不超过 1、`C ≥ P` 时每帖至少 1 条），并补 `DemoCommentPlanTest`
+  断言这些**形状**（数量对而位置错，只有形状断言挡得住），`DemoSeedIT` 补
+  "每一帖都应有评论"。默认规模（60 帖 / 240 评论）的行为与改动前完全一致。
+- **基线测量脚本的样本筛选函数写了但没有被调用。** `pickPostWithComments` 定义了却没接到
+  `main()` 上，于是"某条顶层评论的回复列表"这个场景仍然按 `feed.items[0]` 取样本 ——
+  也就是修复前的行为依旧存在。同时它的取样假设是"有评论的帖子出现在最新的 25 页里"，
+  而这批演示数据的评论恰好都在更早的帖子上，于是该场景被静默跳过。
+  改为按服务端允许的最大页大小（50）逐页扫到找到为止，扫不到时在报告里**写明扫描页数**
+  而不是少一行。
+- **`docs/architecture.md` 里的演示数据环境变量名写错**：写成 `APP_DEMO_SEED_POST_COUNT`，
+  而实际是 `APP_DEMO_SEED_POSTS`。照着文档执行不会报错 —— Spring 照常启动，
+  只是用了默认规模（60 帖），于是"我以为自己在测 2000 帖的数据"这件事不会有人告诉你。
+  已在文档中写明以 `application.yml` 为准，并提示测量前先用 `total` 确认数据规模。
+- `V3` 注释里引用的旧类名 `ai.camphub.community.app.DemoContentSeeder` 更正为
+  `ai.camphub.bootstrap.DemoSeedRunner`。
+
+### Security
+
+- 社区内容**读公开、写必须登录**，且公开端点逐条列出（默认拒绝）。
+- 帖子正文由服务端渲染 + OWASP 白名单净化；**前端全仓库只有一处 `v-html`**，
+  其值只能来自已净化的 `bodyHtml`。列表摘要与评论均以文本节点渲染，不进 HTML 路径。
+- 评论按纯文本存储与渲染，**不解析 Markdown**：评论区是数量级更高的内容入口，
+  让可渲染的输出出现在那里等于把注入面放大到与正文同级。
+- 归属校验统一返回 **404 而非 403**，不泄漏"这条资源是否存在"。
+- 演示数据生成器默认关闭、显式拒绝在 `prod` profile 下执行，并把演示账号与口令打印在启动日志里
+  （它是公开入口，不该表现得像个秘密）。
+- 令牌续期只对 `40101`（令牌过期）触发一次刷新重试；`40100` / `40102` / `40104` 不重试 ——
+  前三者刷新解决不了，重试只会把用户困在必然失败的循环里。刷新令牌并发去重，
+  因为服务端把"同一刷新令牌被用两次"视为泄露证据并撤销该账号全部会话。
+
+### Known Issues
+
+- **净化白名单的修复不会自动作用于已落库的历史 HTML**（`body_html` 是写入时的快照）。
+  处置路径是"重渲染回填"（`body_md` 已保留，因此这一步是确定性的），见 `docs/adr/0005`。
+- **刷新令牌存 `localStorage`**：XSS 一旦发生可被取走长期凭据。正确收口是改为 `httpOnly` Cookie
+  并补 CSRF 防护；当前压低风险的是"全仓库唯一一处 `v-html`，且内容由服务端净化"。
+- **浏览计数只统计登录用户**，匿名访问不计入，且同一用户同一天只计一次。
+- **深分页仍为 `LIMIT offset`**；**热度排序是"按点赞数倒序"**，没有时间衰减与多项加权。
+- **社区没有审核能力**：任何登录用户都能发布任意内容。审核域在 Phase 10。
+- `?sort=` 之外，`page` / `size` 的非法值走的是"归一化"策略（`page=0` 修正为 1、
+  超出上限截断为上限），而 `sort` 走的是"拒绝"。两者不同是刻意的：前者的合法值是一个范围，
+  后者是一个有限集合，集合外没有"合理的默认解释"。
+
+---
+
 ## [0.2.0] - 2026-09-17
 
 Phase 02 — Identity & Security Foundation。引入完整的账号体系与鉴权能力：

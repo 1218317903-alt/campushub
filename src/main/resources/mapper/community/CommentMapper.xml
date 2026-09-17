@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="ai.camphub.community.infrastructure.CommentMapper">
+
+    <!-- parent_id 用包装类型 java.lang.Long：NULL 是一个有意义的状态（顶层评论），
+         原始类型无法表达"不存在"。若用 _long，MyBatis 会把 NULL 读成 0，
+         于是顶层评论的 parentId 变成 0 —— 一个不存在的评论 id，后续所有基于它的
+         判断都会得出错误结论，而且不会有任何报错。 -->
+    <resultMap id="CommentMap" type="ai.camphub.community.domain.Comment">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="post_id" javaType="_long"/>
+            <arg column="parent_id" javaType="java.lang.Long"/>
+            <arg column="author_id" javaType="_long"/>
+            <arg column="body" javaType="java.lang.String"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="ReplyCountMap" type="ai.camphub.community.domain.ReplyCount">
+        <constructor>
+            <arg column="parent_id" javaType="_long"/>
+            <arg column="reply_count" javaType="_long"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="commentColumns">
+        c.id, c.public_id, c.post_id, c.parent_id, c.author_id, c.body, c.created_at
+    </sql>
+
+    <insert id="insert">
+        INSERT INTO comment (public_id, post_id, parent_id, author_id, body)
+        VALUES (#{comment.publicId}, #{comment.postId}, #{comment.parentId},
+                #{comment.authorId}, #{comment.body})
+    </insert>
+
+    <select id="findByPublicId" resultMap="CommentMap">
+        SELECT <include refid="commentColumns"/>
+        FROM comment c
+        WHERE c.public_id = #{publicId}
+          AND c.deleted_at IS NULL
+    </select>
+
+    <!-- 顶层评论按时间倒序：最新的讨论先看到。走 idx_comment_post_parent_created，
+         parent_id IS NULL 是该索引前缀上的范围扫描。 -->
+    <select id="listTopLevel" resultMap="CommentMap">
+        SELECT <include refid="commentColumns"/>
+        FROM comment c
+        WHERE c.post_id = #{postId}
+          AND c.parent_id IS NULL
+          AND c.deleted_at IS NULL
+        ORDER BY c.created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countTopLevel" resultType="int">
+        SELECT COUNT(*)
+        FROM comment
+        WHERE post_id = #{postId}
+          AND parent_id IS NULL
+          AND deleted_at IS NULL
+    </select>
+
+    <!-- 一次 GROUP BY 覆盖整页父评论，替代逐条 COUNT。
+         没有回复的父评论不会出现在结果里（COUNT 分组只产生有行的组），
+         调用方按缺省 0 处理即可 —— 这比用 LEFT JOIN 从父表出发更省事，
+         因为父评论列表已经在手上，不需要 SQL 再回一次 comment 表。 -->
+    <select id="countRepliesByParentIds" resultMap="ReplyCountMap">
+        SELECT parent_id, COUNT(*) AS reply_count
+        FROM comment
+        WHERE deleted_at IS NULL
+          AND parent_id IN
+        <foreach collection="parentIds" item="parentId" open="(" separator="," close=")">
+            #{parentId}
+        </foreach>
+        GROUP BY parent_id
+    </select>
+
+    <!-- 回复按时间正序：回复是对某条评论的追问，顺着读才通顺。 -->
+    <select id="listReplies" resultMap="CommentMap">
+        SELECT <include refid="commentColumns"/>
+        FROM comment c
+        WHERE c.parent_id = #{parentId}
+          AND c.deleted_at IS NULL
+        ORDER BY c.created_at
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countReplies" resultType="int">
+        SELECT COUNT(*)
+        FROM comment
+        WHERE parent_id = #{parentId}
+          AND deleted_at IS NULL
+    </select>
+
+    <!-- 一条 UPDATE 同时覆盖"删顶层评论"与"删回复"两种情况：
+         删回复时它没有子节点，`parent_id = #{commentId}` 匹配不到任何行。
+         这样就不需要先查"这是不是顶层评论"再决定用哪条语句。 -->
+    <update id="softDeleteWithReplies">
+        UPDATE comment
+        SET deleted_at = #{now}
+        WHERE deleted_at IS NULL
+          AND (id = #{commentId} OR parent_id = #{commentId})
+    </update>
+
+</mapper>

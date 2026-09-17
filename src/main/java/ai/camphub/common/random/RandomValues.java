@@ -1,10 +1,18 @@
-package ai.camphub.identity.domain;
+package ai.camphub.common.random;
 
 import java.security.SecureRandom;
 import java.util.Base64;
 
 /**
  * 随机值生成：对外标识与不透明令牌。
+ *
+ * <h2>为什么放在 common 而不是 identity</h2>
+ * 它原本在 {@code identity.domain} 下，但它的两个能力（不透明对外 ID、不可预测令牌串）
+ * 都不含任何身份语义 —— Phase 03 引入 community 后，帖子同样需要 public_id。
+ * 此时只有两个选择：让 community 依赖 identity（仅为拿一个 ID 生成器，凭空建立一条
+ * 模块依赖边），或者再写一份实现（而"再写一份"对安全相关的生成逻辑尤其危险：
+ * 两份实现只要有一份被改弱，就会成为全系统的短板）。放进共享内核是第三个、也是唯一
+ * 不产生上述两种代价的选择。
  *
  * <h2>为什么必须用 {@link SecureRandom} 而不是 {@code Random}</h2>
  * 这两类值的<b>全部安全性都来自不可预测性</b>：
@@ -14,6 +22,10 @@ import java.util.Base64;
  *   <li>刷新令牌本身就是凭据，可预测等于可以直接登录别人账号。</li>
  * </ul>
  * {@code java.util.Random} 是可复现的伪随机序列，只适合做模拟数据。
+ *
+ * <p><b>注意</b>：Synthetic Demo Seed 生成演示内容时用的是固定种子的
+ * {@code java.util.Random}（为了可复现），但它只用来挑选预置的文案与数量，
+ * 不参与任何 public_id 的生成 —— 那条路径仍然走本类。
  */
 public final class RandomValues {
 

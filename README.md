@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **当前版本** | `v0.1.0` · Phase 01 · Engineering Foundation |
+| **当前版本** | `v0.3.0` · Phase 03 · Community MVP & Bootstrap |
 | **工程约束** | [V2 · 项目宪法](docs/00-工程规约.md)（最高效力） |
 | **执行计划** | [Phase 01 ~ 13](docs/12-phase-plan.md) |
 | **技术基线** | Java 21 · Spring Boot 4.1.1 · MySQL 8.4 · Vue 3 + TypeScript |
@@ -43,8 +43,13 @@ make fe-dev
 > 即 `NODE_OPTIONS= make fe-install`。原因与排查过程见
 > [`docs/11-开发环境.md`](docs/11-开发环境.md) §2.1。**普通开发机无需此操作。**
 
-打开 <http://localhost:5173>，页面上的「运行实例信息」应显示**真实**后端数据。
-其中 **数据库 Schema 基线 = `V1`** 说明 Flyway 迁移已生效。
+打开 <http://localhost:5173>，页面上的「运行实例信息」应显示**真实**后端数据，
+以及社区信息流（`local` profile 会写入一批合成演示数据，见下）。
+
+其中「数据库 Schema 基线」应**等于 `src/main/resources/db/migration/` 里编号最大的那个迁移版本**
+（当前为 `V4`），它说明 Flyway 迁移已真实生效。这里刻意不写死一个数字：
+该值曾经长期停留在 `V1` 而无人察觉，现在由 `SystemInfoIT` 断言它等于最新迁移版本，
+"加了迁移却忘了更新标记"会直接让构建失败。
 
 ```bash
 curl -s http://127.0.0.1:8080/api/v1/system/info | python3 -m json.tool
@@ -53,6 +58,59 @@ curl -s http://127.0.0.1:8080/actuator/health
 
 `make help` 可列出全部命令。环境准备细节（JDK / Docker 的安装与实测记录、
 依赖版本基线、故障排查顺序）见 [`docs/11-开发环境.md`](docs/11-开发环境.md)。
+
+### 本地演示数据
+
+`local` profile 会打开合成数据生成器（`app.demo-seed.enabled=true`），
+让第一次打开首页就能看到完整的板块、帖子、评论与互动，而不是一个空壳。
+只有**显式选择了 local profile** 才会写这批数据，生产 profile 不会。
+
+| 项 | 默认 | 可覆盖 |
+|---|---|---|
+| 演示作者数 | 12 | `APP_DEMO_SEED_AUTHORS` |
+| 帖子数 | 60 | `APP_DEMO_SEED_POSTS` |
+| 评论数 | 240 | `APP_DEMO_SEED_COMMENTS` |
+| 演示账号口令 | `CampusHub-Demo-2026` | `APP_DEMO_SEED_PASSWORD` |
+
+演示账号为 `demo01` … `demoNN`（与作者数同量），**统一使用同一口令**。
+它不是凭据而是公开的演示入口：该口令会被 `PasswordPolicy` 校验，
+不满足时启动**直接失败**，而不是静默少建几个账号。
+
+需要真实数据量时把规模调大再重建数据卷（基线测量即用 2000 帖 / 20 作者）：
+
+```bash
+APP_DEMO_SEED_AUTHORS=20 APP_DEMO_SEED_POSTS=2000 APP_DEMO_SEED_COMMENTS=4000 make run
+```
+
+评论总数会**均匀摊到每一帖**（`DemoCommentPlan`），而不是"从第一帖开始填满就停"。
+后者会让评论全堆在最旧的帖子上，而首页按发布时间倒序 —— 最显眼的位置恰好一屏零评论。
+规则与取舍见 [`docs/architecture.md`](docs/architecture.md) §9。
+
+### 只读接口基线延迟
+
+`scripts/bench/query-baseline.mjs` 测量社区主要读取路径的单请求延迟分布
+（**不是压测**：并发为 1，先有单请求基线再谈吞吐）。只用 Node 内置能力，无第三方依赖。
+
+```bash
+node scripts/bench/query-baseline.mjs --username demo01 --password 'CampusHub-Demo-2026'
+```
+
+实测（2000 帖 / 4000 评论 / 20 作者，13 个场景各测 200 次）：
+
+| 场景类别 | p50 范围 |
+|---|---|
+| 帖子详情、评论列表 | 3.0 ~ 4.0 ms |
+| 各类信息流（含筛选、深分页、最热排序） | 5.1 ~ 6.2 ms |
+| 带登录态的信息流与详情 | 5.3 ~ 7.7 ms |
+| 板块列表、热门标签、我的收藏 | 6.3 ~ 8.0 ms |
+
+**结论是没有结论要动** —— 当前数据不支持引入缓存，因此 Phase 03 仍然只有 MySQL。
+完整表格、四组对照、局限与"下一步该看哪个接口"见
+[`docs/experiments/EX-000-query-baseline.md`](docs/experiments/EX-000-query-baseline.md)。
+
+> 测量前**必须**关掉 SQL DEBUG 日志，否则测的是"带日志的延迟"。
+> 注意 `--logging.level.ai.camphub=INFO` **关不掉**它 ——
+> 见 [`docs/architecture.md`](docs/architecture.md) §9 的说明。
 
 ### 常用命令
 
@@ -76,9 +134,17 @@ curl -s http://127.0.0.1:8080/actuator/health
 **Phase 02 已完成**（`v0.2.0`）：账号体系与鉴权能力 —— 注册 / 登录 / 登出、
 访问令牌 + 刷新令牌（轮换 + 重放检测）、令牌撤销、密码策略、基础限流、审计基础。
 
-> **接口现默认需要认证。** 引入 Spring Security 并采用"默认拒绝"后，
-> 只有以下端点是公开的：`POST /api/v1/auth/register|login|refresh|logout`、
-> `GET /api/v1/system/info`、`/actuator/health|info`、API 文档。
+**Phase 03 已完成**（`v0.3.0`）：社区内容域 —— 帖子 / 板块 / 标签 / 评论 / 回复 /
+点赞 / 收藏 / 浏览，社区信息流、详情、发布编辑、我的收藏，前端登录态与令牌静默续期，
+以及一份"从零部署即有内容"的合成演示数据与一份可复现的只读接口基线测量。
+
+> **社区内容是「读公开、写必须登录」。** 公开端点由 `SecurityConfig` **逐条列出**
+> （板块、标签、帖子列表、详情、评论列表、回复列表），而不是放行整个前缀 ——
+> 这样新增接口默认需要认证，要公开就必须出现在 diff 里。
+
+> **接口默认需要认证。** 采用"默认拒绝"后，公开端点仅：
+> `POST /api/v1/auth/register|login|refresh|logout`、`GET /api/v1/system/info`、
+> 上段列出的 6 个社区 GET 端点、`/actuator/health|info`、API 文档。
 > 其余一律需要 `Authorization: Bearer <accessToken>`。
 >
 > **部署前必须注入 `APP_JWT_SECRET`**（`openssl rand -base64 48`）。
@@ -86,7 +152,7 @@ curl -s http://127.0.0.1:8080/actuator/health
 > 一个"能启动但人人可猜"的默认密钥，等于把所有用户的账号交给第一个读到源码的人。
 
 后续阶段按 [Phase 计划](docs/12-phase-plan.md) 推进：
-Community MVP → Workspace 与资源级鉴权 → 对象存储 → 数据采集 → 搜索 →
+Workspace 与资源级鉴权 → 对象存储 → 数据采集 → 搜索 →
 RAG → 性能工程 → 通知与审核 → Agent Runtime → Agent 安全 → 服务化与可观测。
 
 ### 认证流程速览

@@ -4,7 +4,7 @@ import ai.camphub.common.error.BusinessException;
 import ai.camphub.common.error.ErrorCode;
 import ai.camphub.identity.config.SecurityProperties;
 import ai.camphub.identity.domain.PasswordPolicy;
-import ai.camphub.identity.domain.RandomValues;
+import ai.camphub.common.random.RandomValues;
 import ai.camphub.identity.domain.User;
 import ai.camphub.identity.domain.UserCredential;
 import ai.camphub.identity.domain.UserStatus;

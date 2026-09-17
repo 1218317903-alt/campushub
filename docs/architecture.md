@@ -6,7 +6,7 @@
 > **维护纪律**：本文是活文档。每次 Phase 结束、或任何影响链路/契约/目录结构的改动，
 > 都必须同步更新本文（`docs/00-工程规约.md` §16.3）。**文档与代码不一致时，以代码为准，并立即修文档**。
 >
-> **最后更新**：Phase 01（`v0.1.0`）
+> **最后更新**：Phase 03（`v0.3.0`）
 > **权威程度**：实现级说明；与 `00-工程规约.md` 冲突时以规约为准，与代码冲突时以代码为准。
 
 ---
@@ -83,9 +83,25 @@ ai.camphub
 │                                    UserPrincipalLoader · SecurityConfig ·
 │                                    RestAuthenticationEntryPoint · RestAccessDeniedHandler ·
 │                                    ApiErrorResponseWriter · CommonPasswordList
+├── community/                       模块（Phase 03）：帖子·板块·标签·评论·互动
+│   ├── api/                         PostController · CommentController · CommunityController ·
+│   │                                PageResponse · CurrentUser + Request/Response DTO
+│   ├── app/                         PostService · CommentService · ReactionService ·
+│   │                                TagService · FeedQuery · PostCommand ·
+│   │                                PostCardView · PostDetailView · CommentView · ReactionResult
+│   ├── config/                      CommunityProperties（帖子/评论/标签的各类上限）
+│   ├── domain/                      Post · PostSummary · PostDetail · Comment · Category ·
+│   │                                Tag · TagAssignment · MarkdownRenderer · Slugifier
+│   └── infrastructure/              (Mapper + XML)
+├── bootstrap/                       组装点（Phase 03）：DemoSeedRunner · DemoContentLibrary ·
+│                                    DemoSeedProperties
 └── platform/                        平台能力（非业务域）
     └── audit/                       AuditAction · AuditResult · AuditEntry · AuditService
 ```
+
+`bootstrap` 不是业务模块，而是**组装点**：它把 identity 的注册能力与 community 的发帖/评论/
+点赞能力组装成"生成一份演示数据"这件事。放在依赖图顶端（只能依赖业务模块、不能被依赖），
+由 ArchUnit 断言守住。理由见 §2.3 与该包内 `DemoSeedRunner` 的类注释。
 
 `platform.audit` 归属 `platform` 而非 `identity`：审计是**横向能力**，
 后续 community / workspace / ai 都要写审计。放进 `identity` 会让每个模块都反向依赖它。
@@ -122,12 +138,18 @@ ai.camphub
 frontend/src/
 ├── api/
 │   ├── types.ts        后端错误契约的 TS 镜像
-│   ├── http.ts         fetch 封装：ApiError / NetworkError / 超时 / 取消
-│   └── system.ts       按领域分文件的接口定义
-├── stores/             Pinia（当前仅 app store）
-├── router/             路由表（全部为动态 import，路由级懒加载）
+│   ├── http.ts         fetch 封装：ApiError / NetworkError / 超时 / 取消 / 令牌过期自动刷新并重试
+│   ├── auth.ts         登录 · 注册 · 刷新 · 登出 · 资料
+│   ├── community.ts    社区接口与类型（与后端 record 手工对齐）
+│   └── system.ts       运行实例信息
+├── stores/             Pinia：app（运行信息）· auth（登录态、令牌、刷新去重）
+├── router/             路由表（全部为动态 import，路由级懒加载）+ 登录守卫
 ├── layouts/            应用外壳（顶栏 + 内容区 + 页脚）
 ├── views/              页面
+│   ├── auth/           LoginView（登录与注册同页）
+│   └── community/      CommunityFeedView · PostDetailView · PostEditorView · MyFavoritesView
+├── components/         PostCardItem · CommentThread · PasswordInput
+├── utils/              datetime（显式 Asia/Shanghai）· form（字段错误 → 表单属性）
 ├── components.d.ts     由 unplugin-vue-components 生成，**需要入库**
 └── styles/main.css     全局重置、排版基线、CSS 变量
 ```
@@ -279,6 +301,55 @@ Spring 的事务基于代理，**同一个类内部的方法自调用不会走�
 Tomcat 复用线程。不清理会把上一个请求的 traceId 带到下一个请求的日志里 ——
 这种「串号」比没有 traceId 更糟：它会引导排查到错误的地方。
 
+### 3.6 社区接口：读公开、写必须登录（Phase 03）
+
+`SecurityConfig` **逐条列出**公开的 GET 端点（板块、标签、帖子列表、帖子详情、评论列表、回复列表），
+而不是放行整个 `/api/v1/community/**`。理由：后者会让"以后新增的接口"默认就是公开的 ——
+一个新增的 Controller 只要落在那个前缀下就自动匿名可访问，而且不会有任何提示。
+逐条列出意味着新增接口**默认为需要认证**，要公开就必须去改 `SecurityConfig`，于是它必然出现在 diff 里。
+
+**匿名读者与登录读者走的是同一个接口**，差别只在响应里的三个布尔字段
+（`liked` / `favorited` / `ownedByMe`）。这三个字段在匿名时**恒为 false 但始终存在**，
+因此前端不需要为"是否登录"写两套渲染分支 —— 那类分支正是"未登录时页面看起来正常、
+登录后某处空了"的常见成因。
+
+`CurrentUser.idOf(principal)` 只用于**读**接口：它就是 `principal == null ? null : userId`，
+让同一段查询代码同时服务匿名与登录读者。**写**接口一律直接用 `principal.userId()`，
+因为安全配置已经保证它们不可能是匿名的；在这里也做空值兜底，只会把
+"安全配置漏了一条"这种应当响亮的错误，变成一个静默的越权。
+
+归属校验一律返回 **404 而非 403**：403 等于告诉调用方"这条资源存在，只是不归你"，
+那就是一个免费的资源枚举器。规则与 `ErrorCode.NOT_FOUND` 的注释一致，Phase 04 的资源级鉴权沿用。
+
+### 3.7 前端的令牌续期（Phase 03）
+
+浏览器里没有"每 15 分钟重新登录一次"这个选项，因此必须能静默续期：
+
+```
+请求 → 401 + code=40101（访问令牌已过期）
+     → authBridge.refreshTokens()      ← 由 auth store 实现；HTTP 层只依赖接口，不 import store
+     → 成功：重放原请求一次
+     → 失败：onSessionLost() 清理本地状态，把原错误抛给调用方
+```
+
+三条边界是刻意的：
+
+1. **只对 40101 这么做。** `40100`（未登录）说明请求里根本没带令牌，刷新解决不了；
+   `40102` / `40104`（令牌无效 / 已失效）说明该会话已被判定不可信，刷新同样会被拒。
+   三者若一并重试，只会把用户困在一个必然失败的循环里。
+   把"过期"与"无效"分成两个错误码的全部理由，就是在这一行兑现。
+2. **认证入口自身不参与重试**（`/v1/auth/login|register|refresh|logout`），
+   否则刷新失败会递归触发刷新。
+3. **并发刷新必须去重**（`refreshInFlight`）。服务端把"同一个刷新令牌被用两次"视为泄露证据、
+   撤销该账号全部会话（见 §3.3），所以少了这一步，"页面刚打开就自动登出"会稳定复现 ——
+   一个页面同时发三个请求，令牌一过期就是三次刷新。
+
+**刷新令牌放在 `localStorage` 是一个明确知情的取舍**：换来"关掉浏览器再打开仍是登录状态"
+（这与 30 天有效期本来的语义一致），代价是 XSS 一旦发生，攻击者可以直接取走长期凭据。
+当前压低风险的是"全仓库只有一处 `v-html`，且其内容由服务端净化"（见 ADR 0004）。
+正确的收口方式是把刷新令牌改为 `httpOnly` Cookie 并补上 CSRF 防护，届时访问令牌可以只放内存
+—— 记录在 §10，不作为遗留盲点。
+
 ---
 
 ## 4. 统一错误契约
@@ -316,7 +387,14 @@ HHH SS
 | `40050 ~ 40059` | `ai` | Phase 08 起 |
 
 当前已定义：`40000` 校验失败 · `40001` 请求不合法 · `40002` 类型错误 · `40003` 缺参 ·
+`40010` 密码策略不满足（`identity`）·
+**`40030` 板块不存在 · `40031` 帖子内容不符合要求 · `40032` 标签名不合法（`community`）** ·
 `40400` 不存在 · `40500` 方法不支持 · `41500` 内容类型不支持 · `50000` 内部错误 · `50300` 依赖不可用。
+
+`40031` 与 `40000` 的分工是刻意的：前者管**字段格式**（必填、单字段长度这类由
+Bean Validation 声明的结构约束），后者管**业务策略**（标签数量、正文总长这类
+上限取自配置、将来会被压测调整的约束）。合成一个码，前端就无法区分
+"我少填了一个字段"与"我写得太长了"。完整清单以 `ErrorCode` 枚举为准。
 
 ### 4.2 三个刻意的设计取舍
 
@@ -368,6 +446,31 @@ HHH SS
 它会把「库结构不符合预期」静默跳过，属于把配置错误伪装成正常运行。
 宁可启动失败，也不要静默错位（`clean-disabled: true` 同理）。
 
+### 5.3 配置块的缩进层级：一类不会报错的配置错误
+
+Phase 03 踩到过一个**应用照常启动、测试照常全绿**的配置错误：`application.yml` 里的
+`community:` 与 `request:` 两个块被写在了**顶层**，而对应属性类的前缀是
+`app.community` / `app.request`。于是这些配置**全部静默失效** —— 不是"用默认值"，
+而是"这些键根本不存在"。
+
+`request:` 整块都是 `${APP_TRUST_FORWARDED_HEADERS:false}` 这类安全开关。
+失效后的表现是：限流在反向代理之后把所有请求都算在同一个代理 IP 上 ——
+功能看起来完全正常，只是额度被整个站点的流量一起消耗。而 `community:` 里
+全是帖子/评论/标签的各项上限，失效后的表现是上限悄悄变成属性类里的默认值。
+
+**根因不是打错字。** 是 Spring 对 `record` 的构造器绑定：属性缺失时
+它**不会报错**（要么用默认值、要么绑定失败），"写错位置"与"本来就没打算配"
+在运行时完全一样。这类错误的共同特征是：*唯一的证据是一份从未被读取的配置*。
+
+**处置**：新增 `ApplicationConfigStructureTest`，直接解析 `application.yml`
+并断言这些键位于 `app:` 之下。它是**结构断言**而不是行为断言 —— 行为断言的写法是
+"改了配置值，观察行为是否变化"，那个测试在配置失效时**自己也是绿的**。
+反向验证：把 yml 还原成修复前的样子，这个测试报 11 个缺失键。
+
+> 一般化：凡是"配置读不到就用默认值"的绑定方式，都必须配一条**结构断言**。
+> 项目里其他同类项还有：`app.demo-seed.*` 的规模变量名（写成 `..._POST_COUNT`
+> 不报错，只是用了默认的 60 帖），以及 Flyway 的迁移标记（见 §7）。
+
 ---
 
 ## 6. 日志与可观测性
@@ -412,6 +515,27 @@ HHH SS
   为了「少写几行 CRUD」而停在 Boot 3 上不划算；且本项目的数据访问以明确 SQL 为主，用不上它的动态能力。
 - **时间与时区**：JDBC 连接串显式指定 `connectionTimeZone=Asia/Shanghai&forceConnectionTimeZoneToSession=true`。
   MySQL 默认 `time_zone=SYSTEM`，容器时区与 JVM 时区不一致时，「发布时间 / 时间衰减排序」会出现整体偏移。
+- **V3（Phase 03）新增 7 张 community 表**：`category` · `tag` · `post` · `post_tag` ·
+  `comment` · `post_reaction` · `post_view_daily`。每个非显然决定都就地写在迁移脚本的注释里，
+  这里只列要点（**实现级事实以迁移脚本为准**）：
+  - **对外标识用 `public_id`（`CHAR(22)` 随机值）或 `slug`，不用自增 id**：
+    沿用"不对外暴露连续整数"的一贯做法，防 ID 遍历。
+  - **计数列内联在 `post` 上**（`view_count` / `like_count` / `favorite_count` / `comment_count`），
+    不拆 `content_stats`。完整论证、配套约束与拆分触发条件见 `docs/adr/0004`。
+  - **互动幂等由主键强制**：`post_reaction` 主键是 `(user_id, post_id, type)`，
+    重复点赞不可能写出第二行；`ReactionService` 捕获 `DuplicateKeyException` 判断"是否真的新增"，
+    只有真的新增才 `+1`。计数的正确性因此不依赖业务代码的判断。
+  - **`comment` 严格两层，且刻意不存 `root_id`**：在两层约束下 `root_id` 与"回复的 `parent_id`"恒等。
+    但**层级规则只能写在服务层** —— 外键能表达"父评论存在"，无法表达"父评论必须是顶层评论"，
+    因此"回复的回复被拒"这条必须由集成测试钉住，不能指望数据库。
+  - **浏览计数分两张表**：明细 `post_view_daily (post_id, view_date, user_id)` 负责按天去重，
+    汇总落 `post.view_count`。明细表的 `idx_post_view_date` 是为将来按日期清理过期明细准备的。
+  - **索引不带 `deleted_at` 条件**：与本项目内容类索引的一般约定不同。
+    理由是 `deleted_at` 作为复合索引**末列**对过滤没有帮助，作为**首列**则会让
+    "按 `published_at` 倒序取前 N 条"失去有序扫描能力；而正常运营下删除率是个位数百分比，
+    沿索引扫描一段再过滤的代价可以忽略。**等删除率真的变高再调整，而不是先加一列。**
+  - **列表查询不读 `MEDIUMTEXT` 正文**：`summaryColumns` 不含 `body_md` / `body_html`，
+    摘要由写入时派生并落库。列表与详情的列清单因此是两段独立的 SQL 片段。
 
 ---
 
@@ -462,12 +586,38 @@ JSON 解析复用容器里那个 `ObjectMapper`（Boot 4 起是 Jackson 3 的 `t
 测试 profile 开启 `trust-forwarded-headers`，让用例用 `X-Forwarded-For` 各占一个桶
 （RFC 5737 的 `198.51.100.0/24`，一眼能看出不是真实来源），而限流逻辑本身仍是被真实执行的那份代码。
 
-### 8.3 命令
+### 8.3 社区测试的组织方式（Phase 03）
+
+| 类 | 聚焦 |
+|---|---|
+| `CommunityContentIT` | 发布 → 详情 → 列表的完整往返；**Markdown 注入防护用四种载体分别验证**（`<script>`、`javascript:` 协议、`iframe`、`data:` URI）；筛选与分页的归一化（空串视为未指定、页大小被截断、`page=0` 被修正）；**排序参数不区分大小写**；标签归一化（`Java` 与 `java` 落到同一个 slug、中文标签保留、纯符号标签被拒）；归属校验（非作者编辑拿到 **404 而不是 403**） |
+| `CommunityDiscussionIT` | 两层评论结构（"回复的回复"被拒、跨帖回复被拒）、删除顶层评论的**级联**、点赞/收藏的幂等、浏览计数按天去重且匿名不计 |
+| `DemoSeedIT` | 演示数据可读、HTML 已渲染、演示账号能**真实登录**、重跑为空操作 |
+| `MarkdownRendererTest` · `SlugifierTest` | 纯逻辑，不起容器：净化白名单、URL 协议过滤、摘要截断；标签 slug 归一化 |
+
+四个来自实际踩坑的取舍：
+
+1. **断言要选"能证明机制成立"的那个观测点。** 验证"删除顶层评论会级联删除其回复"时，
+   最初断言的是"回复列表返回空" —— 但本项目对已软删除的资源一律对外表现为**不存在**，
+   所以正确的期望是 **404**。而 404 只能说明"接口拒绝了"，真正证明级联生效的是
+   **详情页 `commentCount` 归零**（该计数是重算出来的）。断言写在错误的观测点上，
+   会让人以为机制生效了，而其实只验证了另一个规则。
+2. **不测全局排序。** 集成测试共用一个 MySQL 容器，其他用例创建的帖子同样在结果集里，
+   断言"排序后第一条就是它"会时对时错。排序用例因此只断言"参数被接受且结果可达"。
+3. **不为纯逻辑再补一层单元测试。** 净化规则由 `MarkdownRendererTest` 覆盖，
+   而"发布 → 存库 → 读回"这条链路只有在真实 MySQL 上才成立
+   （字符集、排序规则、`MEDIUMTEXT`、以及 `utf8mb4_0900_ai_ci` 下的唯一键行为都不会在内存里出现）。
+   在能覆盖的地方只写一遍。
+4. **演示数据用独立的 `@TestPropertySource` 打开**（`DemoSeedIT`），
+   而不是让 `application-test.yml` 全局开启。后者会让**所有**集成测试都跑一遍数据生成，
+   既拖慢全套，又给别的用例引入"库里本来就有 60 条帖子"这种隐式前提。
+
+### 8.4 命令
 
 ```bash
 make test      # 仅单元测试（*Test），不需要 Docker
 make it        # 仅集成测试（*IT），需要 Docker
-make verify    # 全量：单元 + 集成
+make verify    # 全量：单元 + 架构 + 集成
 ```
 
 ---
@@ -489,7 +639,64 @@ make fe-install && make fe-dev
 ```
 
 验证：打开 `http://localhost:5173`，页面上的「运行实例信息」应显示真实后端数据，
-其中 **数据库 Schema 基线 = `V1`** 说明 Flyway 迁移已生效。
+其中 **数据库 Schema 基线应等于 `db/migration` 里最新的迁移版本**
+（Phase 03 为 `V4`）—— 说明 Flyway 迁移已生效。
+这条相等关系由 `SystemInfoIT` 断言，所以"加了迁移却忘了更新基线标记"会让构建失败，
+而不是让端点长期报一个过期的值。
+
+**演示数据（Synthetic Demo Seed）**：`local` profile 下 `app.demo-seed.enabled=true`，
+后端初次启动时会生成一份合成演示数据，并把**演示账号与口令打印在启动日志里**。
+它默认关闭、显式拒绝在 `prod` profile 下执行，并按"库里有没有帖子"判断是否跳过 ——
+因此重启不会重复生成。规模可用环境变量调整：
+
+```bash
+APP_DEMO_SEED_AUTHORS=20 APP_DEMO_SEED_POSTS=2000 \
+APP_DEMO_SEED_COMMENTS=4000 make run
+```
+
+> **变量名以 `application.yml` 为准**：是 `APP_DEMO_SEED_POSTS` 而不是 `..._POST_COUNT`。
+> 名字写错时不会报错 —— Spring 会照常启动，只是用了默认规模（60 帖），
+> 于是"我以为自己在测 2000 帖的数据"这件事不会有人告诉你。测量前请先用
+> 列表接口的 `total` 确认数据规模，脚本会把实际数据集打印在报告抬头。
+
+> 本机实测：20 位作者 / 2000 帖 / 4000 评论 / 18094 次互动 / 10000 次浏览，耗时 131246 ms（约 131 秒）。
+> 慢是刻意的 —— 它走各模块的**公开应用服务**（密码真哈希、Markdown 真渲染、审计真写），
+> 而不是直接 `INSERT`。这份慢换来的是：演示数据与真实用户走的是同一条代码路径。
+
+**评论的分配规则**（`DemoCommentPlan`）：评论总数按帖子数**均匀摊开**，
+而不是"从第一帖开始逐帖填满就停"。后者会把评论全部堆在最旧的那一段帖子上，
+而首页按发布时间倒序 —— 于是最显眼的位置恰好是一屏零评论，
+且帖数、评论数、账号登录这些容易断言的量全都正常。
+规则是第 `i` 帖分到 `⌊(i+1)·C/P⌋ − ⌊i·C/P⌋` 条：总和严格等于上限、任意两帖相差不超过 1、
+`C ≥ P` 时每帖至少 1 条。取舍见该类注释（`C < P` 时最新帖仍然一定有评论）。
+
+**若 `.env` 是在 Phase 02 之前复制的**，会缺少 `APP_JWT_SECRET`，后端启动会直接失败
+（失败信息里写了生成方式）。补一行即可：
+
+```bash
+printf 'APP_JWT_SECRET=%s\n' "$(openssl rand -base64 48)" >> .env
+```
+
+**基线测量**（可复现，且跨平台）：
+
+```bash
+node scripts/bench/query-baseline.mjs --username demo01 --password '<演示口令>' --out baseline.md
+```
+
+**测量前必须把 SQL 日志关掉。** `local` profile 把 `ai.camphub.*.infrastructure` 设为 DEBUG，
+每条 SQL 与参数都会打印 —— 那是真实的 CPU 与 IO 开销，会算进端到端延迟里，
+测出来的是"带日志的延迟"。注意 `--logging.level.ai.camphub=INFO` **不足以**关掉它：
+日志级别按 logger 名从具体到宽泛匹配，`ai.camphub.community.infrastructure=DEBUG`
+比 `ai.camphub` 更具体，因此后者被忽略。要逐个覆盖：
+
+```bash
+--logging.level.ai.camphub.community.infrastructure=INFO \
+--logging.level.ai.camphub.identity.infrastructure=INFO \
+--logging.level.ai.camphub.system.infrastructure=INFO
+```
+
+用 Node 而不是 shell 脚本，是为了在 Windows 上也能直接跑（`00-工程规约.md` §18.6）。
+测量结果与结论见 `docs/experiments/EX-000-query-baseline.md`。
 
 详细的环境准备（JDK / Maven / Docker 的安装与验证记录）见 `docs/11-开发环境.md`；
 若页面取不到数据，按 `docs/11-开发环境.md` §6 的排查顺序逐项确认。
@@ -514,6 +721,13 @@ make fe-install && make fe-dev
 | 前端无 ESLint / Prettier | 依靠 `strict` TS 与 `strictTemplates` | 多人协作或格式化争议出现时引入 |
 | 前端 chunk 划分仅拆出 vue 三件套 | Arco 按页面路由自然分段 | 出现体积告警时细化 `manualChunks` |
 | `components.d.ts` 为生成物但需入库 | 已入库，改动时会出现在 diff | 无更好方案：`strictTemplates` 依赖它。仅在组件增减时变化 |
+| 净化白名单的修复不追溯历史数据 | `body_html` 是写入时的快照，改白名单不会重写已落库的行 | 处置路径是重渲染回填（`body_md` 已保留，确定性）。见 `docs/adr/0005` |
+| 刷新令牌存 `localStorage` | XSS 一旦发生可被取走 30 天长期凭据 | 改为 `httpOnly` Cookie + CSRF 防护；届时访问令牌只放内存。见 §3.7 |
+| 浏览计数只统计登录用户 | 匿名访问不计，同用户同天只计一次 | 需要真实 PV 时改为按 IP/指纹去重，代价是准确度与隐私 |
+| 深分页仍为 `LIMIT offset` | 2000 帖下实测第 10 页未变慢（5.7 vs 6.2 ms） | `offset` 大到让深分页真的变慢，或需要连续滚动时，改 keyset 分页 |
+| 热度排序为"按点赞数倒序" | 无时间衰减、无多项加权 | Phase 09 依据基线数据决定加权口径 |
+| 社区无审核能力 | 任何登录用户可发布任意内容 | Phase 10 审核域 |
+| 社区无内容删除率数据 | 索引刻意不带 `deleted_at` 条件（见 §7） | 删除率真实升高到影响扫描量时再调整索引 |
 
 ---
 
@@ -523,3 +737,4 @@ make fe-install && make fe-dev
 |---|---|---|
 | 2026-09-17 | `v0.1.0` | 初版。Phase 01：工程骨架、统一错误契约、traceId 链路、Flyway、MyBatis、三层测试体系、前端骨架 |
 | 2026-09-17 | `v0.2.0` | Phase 02：新增 §3.2 受保护接口链路与 §3.3 令牌体系与 §3.4 事务边界、§8.2 安全测试组织；包结构补入 `identity` 与 `platform.audit`；取舍表更新认证与限流状态 |
+| 2026-09-17 | `v0.3.0` | Phase 03：新增 §3.6「读公开、写需登录」与 §3.7 前端令牌续期、§5.3 配置块缩进陷阱、§8.3 社区测试组织、§9 演示数据与基线测量；包结构补入 `community` 与 `bootstrap`；§2.4 补入懒加载产物体积；§4.1 补入社区错误码；§7 补入 V3 表设计与索引取舍；取舍表补入渲染落库、两层评论、计数内联、深分页等项 |
