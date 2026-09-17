@@ -14,10 +14,24 @@
 
 ## [Unreleased]
 
+_尚无未发布变更。_
+
+---
+
+## [0.1.1] - 2026-09-17
+
+`v0.1.0` 之后的收尾批次：补上持续集成、修正一处仓库洁净度问题、
+按新指令改写阶段纪律。**不涉及任何对外契约变更**，因此按 PATCH 递增。
+
 ### Added
 
-- GitHub Actions CI（`.github/workflows/ci.yml`）：后端 `mvnw verify` + 前端类型检查与构建。
-  工作流内调用的命令与本地 `make verify` 完全一致，避免"本地绿、CI 红"这类漂移。
+- GitHub Actions CI（`.github/workflows/ci.yml`）：两个 job 分别执行后端
+  `./mvnw -B verify`（单元 + ArchUnit + 真实 MySQL 集成测试）与前端
+  `npm ci` + `npm run build`（含 `vue-tsc` 类型检查）。失败时归档
+  surefire / failsafe 报告。CI 调用的命令与本地完全一致，不维护第二套脚本。
+- `docs/00-工程规约.md` §18 新增五条准出条件、仍然禁止的事项、必须停下来问的
+  唯一情形、**全量端到端验收**要求、**平台可移植性**要求（Windows）、
+  以及**对外表述纪律**。
 
 ### Fixed
 
@@ -32,12 +46,27 @@
   仓库保持干净。能直连 Docker Hub 的机器无需任何配置。
   已验证：移除后集成测试仍正常通过（含 ryuk 替换生效）。
 
+- `docs/02-architecture.md` 技术选型表中仍写着 Spring Boot `3.5`，
+  与已锁定的 `4.1.1` 基线不符（该表写在基线确认之前）。已更正。
+- `CHANGELOG.md` `[0.1.0]` 段中一句不准确的表述 —— 原文称 ryuk 的本地 tag 处理
+  "不影响仓库内容的可移植性"，但那个文件当时确实在仓库里，该说法是错的。
+  已改为如实描述当时状态并指向本版本的修复。
+
 ### Changed
 
-- `pom.xml` 中 Testcontainers 注释改为说明上述约定，不再指向已删除的仓库内文件。
-- `docs/11-开发环境.md` §7.2 补充 **Git 协议层**的实测结论（`github.com` 的
-  HTTPS `CONNECT` 被代理拒绝，`gitee.com` 与 `gitlab.com` 的 git 协议均可用），
-  并新增本机 testcontainers 用户级配置的说明；§8 清理了已解决的历史待办。
+- `docs/00-工程规约.md` §18 **解除**「每阶段完成后停止、不得自动开发下一阶段」，
+  授权从 Phase 01 连续推进至最后阶段；§19 自检清单与 §20 变更记录同步更新。
+- `docs/12-phase-plan.md` 的纪律说明同步改写，避免与规约冲突。
+- `docs/11-开发环境.md` §7.2 补充 **Git 协议层**实测结论（`github.com` 的
+  HTTPS `CONNECT` 被代理拒绝，`gitee.com` / `gitlab.com` 的 git 协议均可用），
+  新增 §7.3 记录 ryuk 用户级配置，§8 清理已解决的历史待办。
+- `docs/01-product.md` · `02-architecture.md` · `05-data-platform.md` ·
+  `06-search-ai.md` · `08-roadmap.md`：移除与招聘求职相关的对外表述
+  （详见规约 §18.7）。产品自身内容域中的"求职/招聘"（用户画像、招聘信息聚合）
+  属于产品功能，予以保留。
+- `README.md` 新增「持续集成」小节，项目结构补上 `.github/`，
+  并把阶段推进说明改为四条准出条件。
+- `pom.xml` 中 Testcontainers 注释改为说明用户级配置约定，不再指向已删除的文件。
 
 ---
 
