@@ -62,6 +62,8 @@
     <mybatis-spring-boot.version>4.1.0</mybatis-spring-boot.version>
     <springdoc.version>3.1.1</springdoc.version>
     <archunit.version>1.5.0</archunit.version>
+    <commonmark.version>0.30.0</commonmark.version>
+    <html-sanitizer.version>20260313.1</html-sanitizer.version>
   </properties>
 
   <dependencies>
@@ -147,6 +149,40 @@
     <dependency>
       <groupId>org.springframework.security</groupId>
       <artifactId>spring-security-oauth2-jose</artifactId>
+    </dependency>
+
+    <!-- ========== Markdown 渲染与 HTML 净化（Phase 03） ========== -->
+    <!--
+      为什么 Markdown 在服务端渲染：帖子正文是用户提交的富文本，Markdown → HTML
+      是一道**安全边界**。放在服务端意味着这条边界只有一处实现、一处审查；
+      放到客户端则意味着每个客户端都要各自记得净化，漏一个就是一个存储型 XSS 入口。
+      另外服务端渲染一次、连同原文一起入库，读路径（列表 + 详情）就完全不需要再渲染。
+
+      为什么同时引"转换器"和"净化器"两个库（而不是只引一个）：
+        · commonmark 是转换器。配置 escapeHtml=true 后，用户写的原始 HTML 会被转义输出，
+          但它只覆盖"用户直接塞的标签"这一条路径。
+        · OWASP java-html-sanitizer 是**基于白名单的独立第二道**。它的价值在于
+          "转换器出 bug 时，输出仍然被限制在允许的标签/属性集合内" ——
+          两个独立实现同时出同一个洞的概率远低于一个实现出洞的概率。
+        · 代价很小：净化器不带 guava 之类的大依赖，只有它自己的两个 shim。
+      刻意**不**引 commonmark-ext-autolink 等扩展：每多一个扩展就多一处
+      链接/属性注入面，而当前内容体裁用不到它们。
+    -->
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark</artifactId>
+      <version>${commonmark.version}</version>
+    </dependency>
+    <!-- GFM 表格：技术类长文里表格是常规表达方式，缺了它作者的排版会被整段吞掉 -->
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark-ext-gfm-tables</artifactId>
+      <version>${commonmark.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.googlecode.owasp-java-html-sanitizer</groupId>
+      <artifactId>owasp-java-html-sanitizer</artifactId>
+      <version>${html-sanitizer.version}</version>
     </dependency>
 
     <!-- ========== API 文档 ========== -->
