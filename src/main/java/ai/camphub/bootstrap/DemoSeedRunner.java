@@ -76,9 +76,6 @@ public class DemoSeedRunner implements ApplicationRunner {
      */
     private static final String DEMO_DEVICE = "演示数据生成器";
 
-    /** 每个帖子最多承载多少条评论（顶层 + 回复）。 */
-    private static final int COMMENTS_PER_POST = 4;
-
     private final DemoSeedProperties properties;
     private final Environment environment;
     private final AuthService authService;
@@ -245,26 +242,33 @@ public class DemoSeedRunner implements ApplicationRunner {
     /**
      * 生成评论与回复。
      *
-     * <p>每条帖子固定配 4 条：2 条顶层评论 + 各 1 条回复。刻意让回复只挂顶层评论 ——
-     * 本平台的讨论结构就是两层，生成器没有理由造出服务层会拒绝的形状。
+     * <p>每帖分配多少条评论由 {@link DemoCommentPlan} 算出，<b>不是</b>"从第一帖开始
+     * 顺序填满上限"。后者的后果是评论全落在最旧的一段帖子上，而社区首页默认按发布时间
+     * 倒序 —— 也就是说最显眼的位置恰好是一屏零评论，而帖数、评论数、账号登录这些
+     * 容易断言的量全都照常正确。
+     *
+     * <p>帖内结构保持简单：偶数槽位是顶层评论、奇数槽位是回复，因此回复永远挂在同帖的
+     * 一条顶层评论下 —— 本平台的讨论结构就是两层，生成器没有理由造出服务层会拒绝的形状。
      *
      * @param postPublicIds 帖子对外标识列表
      * @param authors       作者内部主键列表
      * @return 实际创建的评论条数
      */
     private int createComments(List<String> postPublicIds, List<Long> authors) {
+        DemoCommentPlan plan = DemoCommentPlan.distribute(postPublicIds.size(), properties.commentCount());
+
         int created = 0;
-        int max = properties.commentCount();
-        for (int postIndex = 0; postIndex < postPublicIds.size() && created < max; postIndex++) {
+        // 全局评论序号：既用来轮转作者，也用来挑选文案。用递增计数器而不是
+        // "帖序号 × 每帖条数 + 槽位"，是因为每帖条数现在是算出来的、逐帖不同。
+        int sequence = 0;
+        for (int postIndex = 0; postIndex < postPublicIds.size(); postIndex++) {
             String postPublicId = postPublicIds.get(postIndex);
-            for (int slot = 0; slot < COMMENTS_PER_POST && created < max; slot++) {
-                int sequence = postIndex * COMMENTS_PER_POST + slot;
+            for (int slot = 0; slot < plan.commentsFor(postIndex); slot++) {
                 long authorUserId = authors.get(sequence % authors.size());
 
                 if (slot % 2 == 0) {
                     commentService.create(authorUserId, postPublicId, null,
                             DemoContentLibrary.topLevelComment(sequence));
-                    created++;
                 } else {
                     // 回复挂在本帖"刚刚那条"顶层评论上。取它靠的是列表接口的一个既有约定：
                     // 顶层评论按创建时间**倒序**返回，因此第一项就是最新的那条。
@@ -273,15 +277,16 @@ public class DemoSeedRunner implements ApplicationRunner {
                     List<CommentView> topLevel = commentService
                             .listTopLevel(postPublicId, 1, 1).items();
                     if (topLevel.isEmpty()) {
-                        // 上限把顶层评论卡掉了。跳过这条回复而不是报错：
+                        // 顶层评论被上限卡掉了。跳过这条回复而不是报错：
                         // 演示数据的规模本来就可以自由调小
                         continue;
                     }
                     commentService.create(authorUserId, postPublicId,
                             topLevel.getFirst().comment().publicId(),
                             DemoContentLibrary.reply(sequence));
-                    created++;
                 }
+                created++;
+                sequence++;
             }
         }
         return created;
