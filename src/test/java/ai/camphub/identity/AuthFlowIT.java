@@ -200,9 +200,22 @@ class AuthFlowIT extends IdentityTestSupport {
         String ip = nextIp();
         Tokens tokens = registerOk(username, "dev", ip);
 
-        // 只动签名段的最后一个字符：这是最"像真"的篡改方式
-        String tampered = tokens.access().substring(0, tokens.access().length() - 1)
-                + (tokens.access().endsWith("A") ? "B" : "A");
+        // 篡改**签名段的第一个字符**，而不是最后一个。
+        //
+        // 这不是随手选的。HS256 的签名是 32 字节，base64url 无填充编码后是 43 个字符，
+        // 而 43 × 6 = 258 位只比 256 位多 2 位 —— 也就是说**最后一个字符的低 2 位，
+        // 是解码时会被忽略的填充位**。"把最后一个字符从 A 改成 B"恰好只动了最低位，
+        // 于是解码出来的签名与原签名完全相同、令牌依然有效，断言变成偶发失败。
+        // 实测（2000 次随机签名）：改末字符有 **6.40%** 的概率篡改无效（理论值 4/64 = 6.25%，
+        // 即原末字符落在 A~D 时都命中）；改首字符 0/2000 —— 因为第一个字符的 6 位全部有效。
+        //
+        // 教训：安全断言必须"必然触发"，否则它给出的绿灯是概率性的。
+        String token = tokens.access();
+        int signatureStart = token.lastIndexOf('.') + 1;
+        char replacement = token.charAt(signatureStart) == 'A' ? 'B' : 'A';
+        String tampered = token.substring(0, signatureStart)
+                + replacement
+                + token.substring(signatureStart + 1);
 
         HttpResponse<String> response = getWithToken("/api/v1/users/me", tampered, fromIp(ip));
 
