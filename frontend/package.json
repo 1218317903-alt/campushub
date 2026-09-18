@@ -1,6 +1,6 @@
 {
   "name": "camphub-frontend",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "CampusHub AI 前端（Vue 3 + TypeScript + Vite）",
