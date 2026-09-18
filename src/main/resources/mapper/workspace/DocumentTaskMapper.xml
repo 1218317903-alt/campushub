@@ -137,7 +137,17 @@
     </update>
 
     <!-- 人工重试：清零计数、立即可见、清掉上次的错误描述。
-         状态条件见接口注释：正在排队或正在跑的任务不该被打断。 -->
+
+         可被重置的两类任务，见接口注释：
+         1) 终态（SUCCEEDED / FAILED）—— 已跑完，重跑是唯一有意义的动作；
+         2) PENDING 且 attempt_count > 0 —— 这是**一次失败之后正在等退避窗口**
+            的任务。它在数据上与"刚入队、从未尝试过"的任务（attempt_count = 0）
+            有明确的区别，而人工点击"重新解析"的语义正是"别等了，现在就跑"。
+            少了这一支，用户点完按钮要等最长两分钟才看到任何变化，
+            而响应是 200、状态是 PENDING —— 界面无法把"已经受理"与"什么都没发生"区分开。
+
+         仍然排除 RUNNING：重置一个正在执行的任务，会让它结束后再跑一遍
+         （同一份字节解析两次），并让第一次的结果在租约条件上失败。 -->
     <update id="resetForRetry">
         UPDATE document_task
         SET status = 'PENDING',
@@ -150,7 +160,8 @@
         finished_at = NULL
         WHERE document_id = #{documentId}
         AND task_type = #{taskType}
-        AND status IN ('SUCCEEDED', 'FAILED')
+        AND (status IN ('SUCCEEDED', 'FAILED')
+        OR (status = 'PENDING' AND attempt_count &gt; 0))
     </update>
 
     <!-- 领取之后的重读：lockDispatchable 返回的是领取前的快照，
