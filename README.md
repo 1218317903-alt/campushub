@@ -15,6 +15,15 @@
 
 ---
 
+## Phase 01–03 质量复查（未发布）
+
+2026-09-18 已修复刷新令牌并发轮换、刷新暂时失败误登出、删除帖子后回复仍可读、
+分页溢出与限流内存上限问题；补充架构边界及前端认证回归测试。
+完整发现、取舍与验收记录见 [质量复查报告](docs/reports/phase-01-03-quality-review.md)。
+当前仍为 Phase 03，Phase 04 尚未实现。
+
+前端验证：在 `frontend` 下执行 `npm test` 和 `npm run build`；后端执行 `./mvnw -B clean verify`。
+
 ## 5 分钟上手
 
 前置：JDK 21、Docker（用于 MySQL 与集成测试）。本项目自带 Maven Wrapper，**不需要**全局安装 Maven。
@@ -43,8 +52,8 @@ make fe-dev
 > 即 `NODE_OPTIONS= make fe-install`。原因与排查过程见
 > [`docs/11-开发环境.md`](docs/11-开发环境.md) §2.1。**普通开发机无需此操作。**
 
-打开 <http://localhost:5173>，页面上的「运行实例信息」应显示**真实**后端数据，
-以及社区信息流（`local` profile 会写入一批合成演示数据，见下）。
+打开 <http://localhost:5173>，首页进入社区信息流（`local` profile 会写入合成演示数据）。
+「运行状态」导航对应 `/system`，其中的实例信息来自真实后端。
 
 其中「数据库 Schema 基线」应**等于 `src/main/resources/db/migration/` 里编号最大的那个迁移版本**
 （当前为 `V4`），它说明 Flyway 迁移已真实生效。这里刻意不写死一个数字：
