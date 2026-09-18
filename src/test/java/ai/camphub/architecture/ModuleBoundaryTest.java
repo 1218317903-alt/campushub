@@ -4,6 +4,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noFields;
 
+import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
@@ -140,6 +141,24 @@ class ModuleBoundaryTest {
                     .that().resideOutsideOfPackages("ai.camphub.bootstrap..", "ai.camphub")
                     .should().dependOnClassesThat().resideInAPackage("ai.camphub.bootstrap..")
                     .because("组装点位于依赖图顶端，被业务模块依赖即为反向依赖");
+
+    /** 模块私有数据层不得被其他模块或组装点直接引用。 */
+    @ArchTest
+    static void persistenceMustStayInsideOwningModule(JavaClasses importedClasses) {
+        for (String module : BUSINESS_MODULES) {
+            noClasses().that().resideOutsideOfPackage(module)
+                    .should().dependOnClassesThat().resideInAPackage(module + "infrastructure..")
+                    .allowEmptyShould(true)
+                    .check(importedClasses);
+        }
+    }
+
+    /** 领域层不能反向依赖应用编排、接口协议或存储实现。 */
+    @ArchTest
+    static final ArchRule domainMustNotDependOnOuterLayers =
+            noClasses().that().resideInAPackage("..domain..")
+                    .should().dependOnClassesThat()
+                    .resideInAnyPackage("..app..", "..api..", "..infrastructure..", "..config..");
 
     /**
      * 禁止字段注入。
