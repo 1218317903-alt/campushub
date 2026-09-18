@@ -12,6 +12,28 @@
 
 ---
 
+## [0.5.1] - 2026-09-18
+
+补丁版本。**只修 CI，不改任何产品行为**：`v0.5.0` 推送后 GitHub Actions 的
+"后端 · 构建与全量测试"红灯，而本机全量测试是绿的。
+
+### Fixed
+
+- **`S3ObjectStorageIT` 的 MinIO 镜像引用已失效**：`minio/minio` 在 Docker Hub 上
+  现在返回 `404 object not found`（MinIO 已把社区镜像迁到 quay.io）。
+  改为 `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`，并**钉住 release**，
+  理由与 `mysql:8.4` 一致：不随上游 `latest` 漂移。
+  - 本机之所以没暴露这个问题：本机早先把 quay 的镜像人工打过同名 tag，
+    两者 `docker images` 里 ID 相同、看起来一样。详见 `docs/11-开发环境.md` §7.5bis。
+  - 该 release 正是本机此前验证过的版本（镜像 label 的 `version` 与之一致），
+    因此换引用不影响任何已验证的行为。
+
+### Known Issues
+
+- 与 `[0.5.0]` 相同（S3 生产部署形态未验证 · 不支持 OCR · 无上传配额 · 解析吞吐参数未标定）。
+
+---
+
 ## [0.5.0] - 2026-09-18
 
 Phase 05 — Object Storage & Document Workflow。文档从"能存能下"变成**能被处理**：
