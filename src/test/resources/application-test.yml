@@ -38,6 +38,12 @@ app:
       # 长度 ≥ 32 字节是 HS256 的硬要求（256 bit）。
       secret: test-only-jwt-secret-for-camphub-integration-tests-0123456789
   workspace:
+    # 下载令牌的签名密钥。与上面的 jwt.secret 同一条理由：留空时应用会**随机生成**
+    # 并打印一条警告，那意味着重启后所有在途链接立即失效 —— 在测试里它表现为
+    # "换个测试类就验不过令牌"这类难以指认的失败。显式钉死一个测试专用值。
+    documents:
+      public-base-url: ""
+      download-token-secret: test-only-download-token-secret-for-camphub-tests-0123456789
     storage:
       # 测试期强制用本地后端：集成测试不应该要求一个外部的对象存储服务。
       # s3 那条路径由独立的容器化测试（S3ObjectStorageIT，自己起 MinIO）覆盖 ——
