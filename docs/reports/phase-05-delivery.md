@@ -465,3 +465,59 @@ Phase 06（Discover & Data Ingestion）依赖本阶段的东西，以及本阶�
 5. **权限过滤仍在检索阶段之前**：Phase 06 的 Discover 涉及"我能不能看到这份外部内容"，
    第 ②③ 层防线已就位，不需要新的机制，但**必须显式标注**每张新表的 `@ScopedTable` / `@Unscoped`
    （`WorkspaceScopeCoverageTest` 会在构建期拦住漏标）。
+
+---
+
+## 附录 · 推送之后才暴露的缺陷（`v0.5.1` / `v0.5.2`）
+
+**上面所有"全绿"的结论都成立于本机的环境**，而它们在 CI 上不成立。
+推送 `v0.5.0` 之后 GitHub Actions 的「后端 · 构建与全量测试」连续三次红灯，
+其中含一个正文完全没有覆盖的真实缺陷。补记在此，而不改写上面的数字 ——
+那些测试结果本身是真的，缺的是它们**成立的条件**。
+
+### 两个补丁
+
+| 版本 | 修了什么 | 是不是红灯的根因 |
+|---|---|---|
+| `v0.5.1` | `minio/minio` 在 Docker Hub 上已 404（MinIO 迁到 quay.io），改 `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | **不是**（修完仍红），但它本身是一处真实缺陷 |
+| `v0.5.2` | 集成测试的 JDBC 连接时区跟随"跑测试那台机器的时区"，而容器固定在 +08:00 | **是** |
+
+### 根因：测试依赖了"跑测试的机器恰好与容器同时区"
+
+`@ServiceConnection` 生成的测试 JDBC URL **不带** `application.yml` 里的
+`connectionTimeZone` / `forceConnectionTimeZoneToSession`，驱动因此退回默认的 `LOCAL`。
+于是 `document_task` 里出现两套时钟：
+
+- `insertIfAbsent` 不给 `next_attempt_at` 赋值 → 列默认值 `CURRENT_TIMESTAMP(3)`，取**会话时区**（+08:00）；
+- `reschedule` / `resetForRetry` / `markRunning` 写入应用传入的 `Instant` → 按 **JVM 时区**换算。
+
+本机 JVM 恰好是 +08:00 → 一直绿。CI runner 是 **UTC** → 应用算出的"现在"比库里早 8 小时，
+领取语句 `next_attempt_at <= ?` 恒不成立 → **一份文档都不会被解析**，
+10 个用例一起失败，而失败信息写的是"分块数为 0"。
+
+**请注意这个缺陷的性质**：它不是"测试写得不好"，而是**测试跑在一份生产不存在的配置上**。
+生产的 `application.yml` 本来就带这两个参数（`forceConnectionTimeZoneToSession=true`
+把会话时区也钉在 +08:00），因此生产是自洽的。补上参数之后，测试才第一次跑在生产约定上。
+
+### 验证（复现命令）
+
+```text
+TZ=UTC ./mvnw -B clean verify              # 修复前：10 个失败；修复后：BUILD SUCCESS
+TZ=America/New_York ./mvnw -B clean verify # 另一个方向的时区，同样 BUILD SUCCESS
+./mvnw -B clean verify                     # 本机默认 +08:00，不回归
+```
+
+三次均为 **335 用例 0 失败**（按 XML `<testcase>` 计数：surefire 190 + failsafe 145）。
+CI 最终在 `main` = `5325283` / `develop` = `760080a` 上 **success**。
+
+### 三条教训（都写成了可执行的约定）
+
+1. **阶段报告里的"全绿"必须同时给出验证环境。** 只写"BUILD SUCCESS"传递的信心是虚的 ——
+   本阶段正文写下 335 用例全绿时，没有人问过"这些用例在 UTC 的机器上还成立吗"。
+   凡涉及时间的断言，能一键换时区验证的就应该真的换一次（`TZ=UTC` 是最省事的那个）。
+2. **"本机已有"不等于"别人能拿到"。** `minio/minio:latest` 在本机"能用"，
+   只是因为本机早先把 quay 的镜像人工打过同名 tag（两者 `docker images` 里 ID 相同）。
+   判断容器依赖是否可复现，要看引用的镜像在公开仓库里能不能拉到。
+3. **没修好就说明还有第二个原因，不能收工。** `v0.5.1` 在 CHANGELOG 与 tag 里把
+   MinIO 镜像写成了"根因"，修完仍然红 —— 这条错误判断保留在 CHANGELOG 里没有删，
+   因为"当时为什么这么判断"本身就是后续排查同类问题的线索。
