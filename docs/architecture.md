@@ -6,29 +6,42 @@
 > **维护纪律**：本文是活文档。每次 Phase 结束、或任何影响链路/契约/目录结构的改动，
 > 都必须同步更新本文（`docs/00-工程规约.md` §16.3）。**文档与代码不一致时，以代码为准，并立即修文档**。
 >
-> **最后更新**：2026-09-18 · Phase 01–03 质量修复（未发布）
+> **最后更新**：2026-09-18 · Phase 05 · `v0.5.0`（文档流水线：存储 · 解析 · 分块 · 异步任务）
 > **权威程度**：实现级说明；与 `00-工程规约.md` 冲突时以规约为准，与代码冲突时以代码为准。
 
 ---
 
 ## 1. 运行时构成
 
-当前（Phase 03）只有两个进程 + 一个依赖：
+当前（Phase 05）是两个进程 + 两个依赖，且**对象存储只是一个端口，两种实现可切换**：
 
 ```
-┌───────────────────────┐        ┌───────────────────────┐        ┌──────────────────┐
-│  frontend (Vite)      │  /api  │  backend (Spring Boot)│  JDBC  │  MySQL 8.4       │
-│  Vue 3 + TS           │ ─────► │  内嵌 Tomcat :8080    │ ─────► │  Docker :3306    │
-│  dev :5173            │  proxy │  Java 21              │        │  卷 camphub-     │
-│                       │        │                       │        │  mysql-data      │
-└───────────────────────┘        └───────────────────────┘        └──────────────────┘
-     静态产物由 Nginx 托管              单进程，Modular Monolith             唯一外部依赖
+┌───────────────────────┐        ┌─────────────────────────────┐        ┌──────────────────┐
+│  frontend (Vite)      │  /api  │  backend (Spring Boot)      │  JDBC  │  MySQL 8.4       │
+│  Vue 3 + TS           │ ─────► │  内嵌 Tomcat :8080          │ ─────► │  容器 :3306      │
+│  dev :5173            │  proxy │  Java 21 · 单进程            │        │  （本项目用     │
+│                       │        │  ├ 文档解析 worker（轮询）   │        │   3307，见      │
+│                       │        │  ├ 分块与下载链接（HMAC）    │        │   docs/11 §5）  │
+│                       │        │  └ 审计写入                  │        │                 │
+└───────────────────────┘        └──────────────┬──────────────┘        └──────────────────┘
+     静态产物由 Nginx 托管                        │ 文档字节                唯一的关系型依赖
+                                   ┌─────────────▼─────────────┐
+                                   │ 文档字节（ObjectStorage 端口）│
+                                   │ · 本地磁盘（默认，可克隆即跑） │
+                                   │ · S3 兼容（MinIO / AWS S3）   │
+                                   └───────────────────────────┘
 ```
 
-**为什么还没有 Redis / 消息队列 / 对象存储**：它们是解决**已经出现**的性能与一致性问题的工具。
-Phase 01 尚无任何真实负载数据，此时引入只会增加运维面并掩盖真实瓶颈。
-引入时机已写入 `docs/12-phase-plan.md`（Redis 在 Phase 09、对象存储在 Phase 05、搜索在 Phase 07），
-且**引入前必须先有压测或观测数据**（`00-工程规约.md` §16 / §20）。
+**为什么仍然没有 Redis 与消息队列**：它们是解决**已经出现**的性能与一致性问题的工具，
+而本阶段还没有压测数据能证明它们对应的是真实瓶颈（`00-工程规约.md` §16 / §20）。
+异步解析用的是 `document_task` 表 + 轮询 worker —— 选它的理由与**代价**
+（轮询间隔 3 秒就是"入队到开始处理"的延迟下限）写在 [document-pipeline.md](document-pipeline.md) §3。
+Redis 的引入时机仍是 Phase 09，前提是先有实测数据。
+
+**对象存储为什么在 Phase 05 进来**：文档的字节必须落到某处，而"落本地磁盘"与"落对象存储"
+在应用层是同一件事。两种实现都在仓库里，由 `app.workspace.storage.backend` 切换：
+默认 `local` 让"克隆下来就能跑"成立；`S3ObjectStorage` 由**真实 MinIO 容器**的集成测试
+（`S3ObjectStorageIT`）覆盖，因此它不是一段没有跑过的代码。
 
 ---
 
@@ -95,23 +108,35 @@ ai.camphub
 │   ├── domain/                      Post · PostSummary · PostDetail · Comment · Category ·
 │   │                                Tag · TagAssignment · Slugifier
 │   └── infrastructure/              (Mapper + XML)
-├── workspace/                       模块（Phase 04）：协作空间与资源级鉴权
+├── workspace/                       模块（Phase 04/05）：协作空间 · 资源级鉴权 · 文档流水线
 │   ├── api/                         WorkspaceController · NoteController · DocumentController ·
-│   │                                InviteController + Request/Response DTO
+│   │                                DocumentDownloadController · InviteController +
+│   │                                Request/Response DTO
 │   ├── app/                         WorkspaceService · NoteService · DocumentService ·
+│   │                                DocumentParsingService（解析器注册表 + 切分）·
+│   │                                DocumentTaskRunner（领取）·
+│   │                                DocumentTaskProcessor（执行）·
+│   │                                DocumentTaskWorker（@Scheduled 触发）·
+│   │                                DownloadLinkService · DownloadTokenService ·
+│   │                                TokenDownloadService · DocumentParser（端口）·
 │   │                                AuthorizationService（第二层防线）·
 │   │                                ObjectStorage（端口）· WorkspaceScopeContext（范围绑定）·
-│   │                                WorkspaceAccess · WorkspaceSummary · InviteView
-│   ├── config/                      WorkspaceProperties（app.workspace.*）
+│   │                                WorkspaceAccess · WorkspaceSummary · InviteView · DocumentView
+│   ├── config/                      WorkspaceProperties（app.workspace.*）·
+│   │                                WorkspaceConfig（存储后端的 Bean 装配：local | s3）
 │   ├── domain/                      Workspace · WorkspaceMember · WorkspaceInvite · Note ·
 │   │                                WorkspaceDocument · WorkspaceAction（权限矩阵）·
 │   │                                WorkspaceRoleInContext · WorkspaceVisibility ·
+│   │                                DocumentChunker（切分规则）· ParsedDocument · ParsedSection ·
+│   │                                DocumentTask · DocumentParseStatus · ChunkDraft ·
 │   │                                ScopedTable · Unscoped
 │   └── infrastructure/
-│       ├── (五个 Mapper + XML)
+│       ├── (七个 Mapper + XML)
+│       ├── parser/                  MarkdownDocumentParser · PlainTextDocumentParser ·
+│       │                            PdfDocumentParser（PDFBox）· TextDecoding
 │       ├── scope/                   WorkspaceScopeInterceptor（第三层防线）· WorkspaceScopeSql ·
 │       │                            WorkspaceScopeResetFilter
-│       └── storage/                 LocalFileObjectStorage
+│       └── storage/                 LocalFileObjectStorage · S3ObjectStorage
 ├── bootstrap/                       组装点（Phase 03）：DemoSeedRunner · DemoContentLibrary ·
 │                                    DemoSeedProperties
 └── platform/                        平台能力（非业务域）
@@ -624,6 +649,19 @@ Phase 03 踩到过一个**应用照常启动、测试照常全绿**的配置错�
   - **`document.storage_key` 允许 NULL**，但上传路径一定写入它。允许 NULL 是为了让**历史行**
     在 schema 层面是显式的："没有内容可下载"是一个可以被查询表达的状态，而不是靠约定。
     下载这类行返回 503 而不是 404。
+- **V6（Phase 05）新增 2 张表，并给 `document` 增 5 列**：`document_task` · `document_chunk`；
+  `document` 增 `parse_progress` · `chunk_count` · `text_length` · `parser_version` · `parsed_at`。
+  三处刻意设计（逐条理由也写在 `V6__document_pipeline.sql` 的注释里）：
+  - **`UNIQUE KEY uk_document_task_document_type (document_id, task_type)` 是幂等的落脚点。**
+    入队走 `INSERT ... ON DUPLICATE KEY UPDATE id = id`，把"同一份文档只能有一个解析任务"
+    变成数据库保证的事实。若改成"先查再插"，并发下会得到两行任务，而两行任务会并行解析
+    同一份文档 —— 它们的"先删分块再插入"会互相踩，最终少掉一批块。
+  - **租约字段（`lease_owner` / `lease_expires_at`）让 worker 崩溃后任务能回到队列。**
+    代价是处理语义变成**至少一次**，因此解析本身必须幂等（分块"先删后插"在同一事务内完成）。
+    没有幂等，租约就只是"同一份文件被处理两次"的机器。
+  - **`document_chunk` 带 `workspace_id`，唯一键是 `(document_id, ordinal)`。**
+    前者是为 Phase 07 的"权限过滤前置到检索阶段"准备的（规约 §4）—— 检索的每一次查询
+    都要能按空间收窄，而不是检索出结果之后再过滤；后者让"序号不重复"不依赖应用层的自觉。
 - **V5 把 16 个权限点授予基础角色 `USER`。** "人人都有"不等于"人人都是管理员"：
   这些码回答"身份有没有这类能力"，而"这条数据能不能给他"由第二、三层回答。
   反过来，若把 `workspace:delete` 只授给某个"管理员角色"，"拥有者删自己的空间"
@@ -734,12 +772,43 @@ JSON 解析复用容器里那个 `ObjectMapper`（Boot 4 起是 Jackson 3 的 `t
    一个把所有删除都拒绝的实现同样能通过。因此同时断言"成员能删自己的"、
    "拥有者与管理员能删任何一条"，以及响应里的 `deletableByMe` 与实际删除结果**一致**。
 
-### 8.5 命令
+### 8.5 文档流水线的测试组织方式（Phase 05）
+
+流水线的风险集中在**"异步"与"外部系统"**两处，测试的组织方式也围绕它们：
+
+| 类 | 聚焦 |
+|---|---|
+| `DocumentChunkerTest` | 装箱不跨标题、超长段落按句子二级切分、`ordinal` 连续、上界非法时拒绝构造 |
+| `DocumentParserTest` | 三种解析器（PDF 用 PDFBox **真生成** PDF）、失败分类（可重试 / 不可重试）、GBK 编码不产生 U+FFFD |
+| `DocumentParsingRegistryTest` | 注册表自检：类型冲突在装配期失败；白名单里的类型必须都有解析器 |
+| `DownloadTokenServiceTest` | 签发与验签、过期、篡改、令牌不能当身份凭据 |
+| `DocumentPipelineIT` | 端到端一致性（接口 / 库 / 分块表三方）、重试**替换**而非累加、损坏文件终态、字节读不到可重试 |
+| `DocumentParseAuthorizationIT` | 重试的越权矩阵（自己 / 别人 / 拥有者 / 陌生人 / 已删除），以及越权时**无副作用** |
+| `DocumentDownloadTokenIT` | 链接签发的越权、每次签发留审计、兑换不需凭据、令牌不可复用为身份、文档删除后链接立即 404 |
+| `S3ObjectStorageIT` | **真实 MinIO 容器**：字节真落桶、直链真签名、篡改被拒、删除后对象不在、流水线在 S3 上跑通 |
+| `scripts/e2e/browser-check.mjs` | 真实浏览器：上传 → 界面进度 → 已就绪 → 分块可读 → 链接取回字节 → 非成员不可见 → 邀请加入 |
+
+四条来自实际踩坑的取舍：
+
+1. **关掉定时器，由用例自己驱动队列。** 测试 profile 设
+   `app.workspace.worker.enabled=false`，用例显式调 `DocumentTaskRunner.claim` +
+   `DocumentTaskProcessor.process`。依赖 `@Scheduled` 会让"这次跑几次"取决于计时，
+   测试于是时好时坏；而这两个 Bean 与生产是**同一份实现**，没有为测试另写一条路径。
+2. **"三方一致"比"接口返回 200"值钱。** 上传后同时断言接口状态、`document` 行与
+   `document_chunk` 行。只断言接口会把"任务入了队但分块没写"这类问题放过去 ——
+   而它恰好是异步链路最常见的故障形态。
+3. **重试必须断言"替换"而不是"累加"。** 重复解析同一份文档是正常操作（租约超时、人工重试），
+   若分块是追加而不是替换，第二次解析后分块数会翻倍 —— 而**接口层完全看不出来**。
+4. **阴性断言要留一份。** `S3ObjectStorageIT` 对不存在的键断言"判为不存在"，
+   而不只是"存在的键能取到"：只测后者的话，一个永远返回"存在"的实现在测试里同样能通过。
+
+### 8.6 命令
 
 ```bash
 make test      # 仅单元测试（*Test），不需要 Docker
 make it        # 仅集成测试（*IT），需要 Docker
 make verify    # 全量：单元 + 架构 + 集成
+make e2e       # 真实浏览器验收（需 up + run + fe-dev 同时跑着）
 ```
 
 ---
@@ -755,6 +824,10 @@ make up
 
 # 2. 起后端（默认 local profile，:8080）
 make run
+#    ⚠️ 若环境注入了 SERVER__PORT（macOS 沙箱里会），应用会被挤到随机端口而**不报错**。
+#       此时显式指定端口（命令行参数优先级最高）：
+#       ./mvnw -B spring-boot:run -Dspring-boot.run.arguments=--server.port=8080
+#       定位方式见 docs/11 §7.6
 
 # 3. 起前端（:5173，/api 自动代理到 :8080）
 make fe-install && make fe-dev
@@ -762,7 +835,7 @@ make fe-install && make fe-dev
 
 验证：打开 `http://localhost:5173`，页面上的「运行实例信息」应显示真实后端数据，
 其中 **数据库 Schema 基线应等于 `db/migration` 里最新的迁移版本**
-（Phase 03 为 `V4`）—— 说明 Flyway 迁移已生效。
+（Phase 05 为 `V6`）—— 说明 Flyway 迁移已生效。
 这条相等关系由 `SystemInfoIT` 断言，所以"加了迁移却忘了更新基线标记"会让构建失败，
 而不是让端点长期报一个过期的值。
 
@@ -798,6 +871,15 @@ APP_DEMO_SEED_COMMENTS=4000 make run
 ```bash
 printf 'APP_JWT_SECRET=%s\n' "$(openssl rand -base64 48)" >> .env
 ```
+
+**浏览器验收**（Phase 05 起）：
+
+```bash
+make e2e     # 用本机 Chrome 通过 CDP 走一遍：空间 → 上传 → 解析 → 分块 → 下载链接 → 跨用户不可见
+```
+
+它刻意不依赖任何测试框架与额外浏览器：脚本用 Node 内置的 WebSocket 直连 CDP，
+能力只用到"导航、求值、取元素、设文件、截图"。截图落在 `target/e2e/`（构建产物目录，不入库）。
 
 **基线测量**（可复现，且跨平台）：
 
@@ -850,11 +932,16 @@ node scripts/bench/query-baseline.mjs --username demo01 --password '<演示口�
 | 热度排序为"按点赞数倒序" | 无时间衰减、无多项加权 | Phase 09 依据基线数据决定加权口径 |
 | 社区无审核能力 | 任何登录用户可发布任意内容 | Phase 10 审核域 |
 | 社区无内容删除率数据 | 索引刻意不带 `deleted_at` 条件（见 §7） | 删除率真实升高到影响扫描量时再调整索引 |
-| 文档字节存本地磁盘，无配额与清理 | 删除文档只标记 `deleted_at`，字节仍留在磁盘上 | Phase 05 与对象存储一起设计（生命周期规则、孤儿对象回收） |
+| 文档无配额，也无孤儿对象回收 | 删除文档会清分块与字节（见 [document-pipeline.md](document-pipeline.md) §7），但没有上传量上限；被外部删掉的对象不会被回收 | 出现真实容量压力时用对象存储的生命周期规则 + 对账任务处理 |
+| 解析吞吐靠单实例轮询 | 批 5 / 3 秒 = 约 1.7 任务/秒，且轮询间隔就是延迟下限 | Phase 09 压测后调 `batch-size` / `poll-interval-ms`，或换 MQ（判据写在 document-pipeline.md §3） |
+| 不支持 OCR | 扫描件 PDF 抽不出文字，会以 FAILED 收尾 | 出现真实需求时单独立项（需要额外运行时与算力预算） |
+| 分块无重叠、无向量嵌入 | 只按标题与字符数切分 | Phase 07 接检索时按召回效果调参（重叠是那时的参数，不是现在的） |
+| S3 后端只在集成测试里跑过 | 生产形态未验证（真实凭据来源、桶策略、跨域） | 首次真实部署时验证 |
+| 本地后端的「直链」仍经过应用 | 是应用签名的地址，不是 CDN 直出 | 需要 CDN 时切 S3 后端（`direct=true`） |
 | 空间无法转让 | 拥有者不能退出（`40023`），只能删除空间或保持原样 | 出现真实需求时新增"转让空间"，需要事务内同时改 `owner_id` 与成员角色 |
 | `TEAM` 与 `PRIVATE` 在授权上无区别 | 两者都只有拥有者与成员可见 | 与 Phase 06/07 的发现与推荐一起设计；现在不假装它有新行为 |
 | 空间成员列表未分页 | 受 `max-members = 50` 约束，规模有上界 | 上限被调高到百级时再分页 |
-| 文档列表未分页 | 受上传量约束（当前无配额） | 与 Phase 05 的配额一起处理 |
+| ~~文档列表未分页~~ | ✅ 已分页（Phase 05，`PageResponse`） | — |
 | 邀请不代发通知 | 邀请码由邀请人自行转达 | Phase 10 通知域 |
 
 ---
@@ -866,6 +953,7 @@ node scripts/bench/query-baseline.mjs --username demo01 --password '<演示口�
 | 2026-09-17 | `v0.1.0` | 初版。Phase 01：工程骨架、统一错误契约、traceId 链路、Flyway、MyBatis、三层测试体系、前端骨架 |
 | 2026-09-17 | `v0.2.0` | Phase 02：新增 §3.2 受保护接口链路与 §3.3 令牌体系与 §3.4 事务边界、§8.2 安全测试组织；包结构补入 `identity` 与 `platform.audit`；取舍表更新认证与限流状态 |
 | 2026-09-17 | `v0.3.0` | Phase 03：新增 §3.6「读公开、写需登录」与 §3.7 前端令牌续期、§5.3 配置块缩进陷阱、§8.3 社区测试组织、§9 演示数据与基线测量；包结构补入 `community` 与 `bootstrap`；§2.4 补入懒加载产物体积；§4.1 补入社区错误码；§7 补入 V3 表设计与索引取舍；取舍表补入渲染落库、两层评论、计数内联、深分页等项 |
+| 2026-09-18 | `v0.5.0` | Phase 05：新增 [document-pipeline.md](document-pipeline.md)；§1 运行时补入文档 worker 与两种存储后端；§2.2 补入 `parser`/`storage` 与任务三件套；§7 补入 V6 表设计与三处刻意设计；§8.5 新增「文档流水线的测试组织」（原 8.5 命令顺延为 8.6 并补入 `make e2e`）；§9 补入浏览器验收脚本与 `SERVER__PORT` 端口注入说明；取舍表补入配额、解析吞吐、OCR、切分粒度、S3 与本地直链等项 |
 | 2026-09-18 | `v0.4.0` | Phase 04：新增 §3.8 私有资源的三层防线、§8.4 空间与资源鉴权测试组织；包结构补入 `workspace` 与 `common.rendering`，`PageResponse` 从 `community.api` 迁至 `common.web`；§7 补入 V5 表设计与六处刻意偏离；§4.1 补入 `40021`~`40023` / `41300` / `50300`；取舍表补入本地存储、空间转让、`TEAM` 语义等项；同版本包含 Phase 01–03 质量修复 |
 
 
