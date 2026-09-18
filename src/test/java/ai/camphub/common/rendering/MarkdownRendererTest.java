@@ -1,4 +1,4 @@
-package ai.camphub.community.domain;
+package ai.camphub.common.rendering;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

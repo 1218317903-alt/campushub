@@ -6,7 +6,7 @@ import ai.camphub.common.random.RandomValues;
 import ai.camphub.common.web.Page;
 import ai.camphub.community.config.CommunityProperties;
 import ai.camphub.community.domain.Category;
-import ai.camphub.community.domain.MarkdownRenderer;
+import ai.camphub.common.rendering.MarkdownRenderer;
 import ai.camphub.community.domain.PostDetail;
 import ai.camphub.community.domain.PostDraft;
 import ai.camphub.community.domain.PostSummary;
