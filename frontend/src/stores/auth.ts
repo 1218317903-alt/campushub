@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref } from 'vue'
 
 import {
   fetchProfile,
@@ -12,29 +12,8 @@ import {
 import { ApiError, NetworkError, setAuthBridge } from '@/api/http'
 
 /**
- * 登录态。
- *
- * <h2>令牌放在哪里，以及为什么</h2>
- * 访问令牌（15 分钟）与刷新令牌（30 天）都放在 {@code localStorage}。这是一个
- * <b>明确知情的取舍</b>，不是没想过：
- * <ul>
- *   <li>好处是"关掉浏览器再打开仍然是登录状态" —— 用户对社区的默认预期，
- *       而刷新令牌的有效期本来就是 30 天，放内存里等于把它废掉。</li>
- *   <li>代价是 XSS 一旦发生，攻击者可以直接取走刷新令牌，拿到长期会话。
- *       当前的风险面被两件事压住：正文由服务端渲染并净化后才输出（本仓库里
- *       前端没有任何 `v-html` 渲染用户输入的地方），评论以文本节点渲染。
- *       但这只是"降低了发生概率"，不是"消除了后果"。</li>
- *   <li><b>正确的收口方式是</b>把刷新令牌改为 {@code httpOnly} Cookie 并由服务端下发，
- *       同时补上 CSRF 防护（后端 {@code SecurityConfig} 里已经写明"若把刷新令牌
- *       改放进 Cookie，CSRF 那一条必须同步改回来"）。那时访问令牌可以只放内存，
- *       因为它 15 分钟就换一次，不需要持久化。这件事记在
- *       {@code docs/architecture.md} 的已知限制里，不作为本阶段的遗留盲点。</li>
- * </ul>
- *
- * <h2>为什么刷新逻辑要在这里而不是在 HTTP 层</h2>
- * HTTP 层不知道"刷新令牌存在哪、刷新失败之后要做什么"。它只负责在收到
- * "令牌过期"时回调这里，由这里决定是换取新令牌还是判定会话结束。
- * 依赖方向因此是单向的：store → http（注册桥），http → 接口（回调）。
+ * 登录态：同页刷新合并，跨标签页使用 Web Locks 串行轮换并同步 storage。
+ * 令牌目前仍存 localStorage；后续改用 HttpOnly Cookie 时须同时落实 CSRF 防护。
  */
 const ACCESS_TOKEN_KEY = 'camphub.accessToken'
 const REFRESH_TOKEN_KEY = 'camphub.refreshToken'
@@ -56,8 +35,10 @@ export const useAuthStore = defineStore('auth', () => {
    * 也就是说：少了这个去重，"页面刚打开就自动登出"会成为一个稳定复现的 bug。
    */
   let refreshInFlight: Promise<boolean> | null = null
+  let sessionRevision = 0
 
   function persist(tokens: { accessToken: string; refreshToken: string }): void {
+    sessionRevision++
     accessToken.value = tokens.accessToken
     refreshToken.value = tokens.refreshToken
     localStorage.setItem(ACCESS_TOKEN_KEY, tokens.accessToken)
@@ -65,6 +46,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function clear(): void {
+    sessionRevision++
     accessToken.value = null
     refreshToken.value = null
     profile.value = null
@@ -72,36 +54,67 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem(REFRESH_TOKEN_KEY)
   }
 
+  /** 同步其他标签页登录、刷新或登出后的凭据。 */
+  function syncStorage(): void {
+    const access = localStorage.getItem(ACCESS_TOKEN_KEY)
+    const refresh = localStorage.getItem(REFRESH_TOKEN_KEY)
+    if (access !== accessToken.value || refresh !== refreshToken.value) {
+      sessionRevision++
+      accessToken.value = access
+      refreshToken.value = refresh
+      profile.value = null
+    }
+  }
+
+  function onStorage(event: StorageEvent): void {
+    if (event.key === null || event.key === ACCESS_TOKEN_KEY || event.key === REFRESH_TOKEN_KEY) {
+      syncStorage()
+    }
+  }
+  window.addEventListener('storage', onStorage)
+  onScopeDispose(() => window.removeEventListener('storage', onStorage))
+
   /**
-   * 用刷新令牌换取新令牌。
-   *
-   * @returns 成功返回 true；刷新令牌缺失或已失效返回 false
+   * 仅凭据确定失效时返回 false；网络、限流和服务端故障继续向调用方抛出。
+   * 刷新期间发生登出或切换账号时，迟到的响应不能恢复旧会话。
    */
   async function refreshTokens(): Promise<boolean> {
-    if (refreshInFlight) {
-      return refreshInFlight
-    }
-    const current = refreshToken.value
-    if (!current) {
-      return false
-    }
-
-    refreshInFlight = (async () => {
+    if (refreshInFlight) return refreshInFlight
+    const requestedAccess = accessToken.value
+    const rotate = async (): Promise<boolean> => {
+      syncStorage()
+      if (accessToken.value && accessToken.value !== requestedAccess) return true
+      const current = refreshToken.value
+      if (!current) return false
+      const revision = sessionRevision
       try {
         const { data } = await refreshApi(current)
+        syncStorage()
+        if (sessionRevision !== revision) {
+          // 已切换会话，回收这次迟到的刷新凭据。
+          void logoutApi(data.refreshToken).catch(() => undefined)
+          return accessToken.value !== null
+        }
         persist(data)
         return true
-      } catch {
-        // 刷新失败的原因不在此处区分：无论是令牌被撤销、过期，还是网络不通，
-        // 对调用方而言结论都是"这次拿不到新令牌"。网络问题由随后的请求自己报错，
-        // 这里不去猜 —— 猜错会导致把用户的登录态误清掉
-        return false
-      } finally {
-        refreshInFlight = null
+      } catch (error) {
+        syncStorage()
+        if (sessionRevision !== revision) return accessToken.value !== null
+        if (error instanceof ApiError && (error.status === 401 || error.code === 40301)) {
+          return false
+        }
+        throw error
       }
-    })()
-
-    return refreshInFlight
+    }
+    const pending = typeof navigator !== 'undefined' && navigator.locks
+      ? navigator.locks.request('camphub.refresh', rotate)
+      : rotate()
+    refreshInFlight = pending
+    try {
+      return await pending
+    } finally {
+      if (refreshInFlight === pending) refreshInFlight = null
+    }
   }
 
   /**
@@ -179,9 +192,8 @@ export const useAuthStore = defineStore('auth', () => {
   /**
    * 登出。
    *
-   * <p>先尽力通知服务端撤销刷新令牌，再清本地状态。顺序不能反：
-   * 本地状态一清，刷新令牌就没了，服务端那条会话会一直有效到自然过期。
-   * 通知失败不阻断登出 —— 用户点了登出就必须登出，哪怕网络不通。
+   * <p>先保存待撤销的凭据并清本地状态，再通知服务端。
+   * 通知失败不阻断本地登出；迟到的刷新响应也不能重新建立会话。
    */
   async function logout(): Promise<void> {
     const current = refreshToken.value

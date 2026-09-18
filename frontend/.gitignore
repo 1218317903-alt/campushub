@@ -9,3 +9,6 @@ yarn-error.log*
 .DS_Store
 # 本地 npm 缓存目录（本机沙箱限制导致默认缓存位置不可用时的替代位置）
 .npm-cache/
+
+# Node regression test build output
+.test-dist/
