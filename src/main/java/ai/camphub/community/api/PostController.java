@@ -1,5 +1,6 @@
 package ai.camphub.community.api;
 
+import ai.camphub.common.web.PageResponse;
 import ai.camphub.community.app.CommentService;
 import ai.camphub.community.app.FeedQuery;
 import ai.camphub.community.app.PostService;

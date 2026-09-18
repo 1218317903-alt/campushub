@@ -1,4 +1,4 @@
-package ai.camphub.community.domain;
+package ai.camphub.common.rendering;
 
 import java.util.List;
 import org.commonmark.Extension;
@@ -36,9 +36,17 @@ import org.owasp.html.PolicyFactory;
  * 若没有前两步则会把用户直接写的 HTML 也当成"待净化内容"而不是"待转义文本"。
  * 这三条性质都有对应的断言在 {@code MarkdownRendererTest} 里。
  *
- * <h2>为什么放在 domain 层</h2>
- * 它是业务规则（"用户提交的内容必须先被净化才能展示"），不是对某个外部系统的适配。
- * 它不依赖任何 Spring 类型，因此可以被直接 new 出来做单元测试 —— 由 ArchUnit 守护。
+ * <h2>为什么放在 common 而不是某个业务模块</h2>
+ * 它实现的是"用户提交的内容必须先被净化才能展示"这条规则，与社区、空间、文档
+ * 都无关，因此不属于任何一个业务模块。它不依赖任何 Spring 类型，
+ * 可以直接 new 出来做单元测试 —— 由 ArchUnit 守护领域层不依赖框架。
+ *
+ * <p>Phase 03 时它位于 {@code community.domain}，Phase 04 迁到这里。
+ * 迁移不是为了整齐：项目已规划"空间内容显式发布到社区"，
+ * 那会产生 {@code community → workspace} 的依赖；若渲染器仍留在 community，
+ * 同时又有 {@code workspace → community}，ArchUnit 的循环依赖断言会立刻失败。
+ * 换句话说，把它放在 common 是唯一能让两个方向都不穿过对方的摆法。
+ * <b>将来任何"需要渲染富内容"的新模块都必须复用本类，而不是自己拼 HTML。</b>
  *
  * <h2>线程安全</h2>
  * {@link Parser}、{@link HtmlRenderer}、{@link PolicyFactory} 均为无状态且线程安全，

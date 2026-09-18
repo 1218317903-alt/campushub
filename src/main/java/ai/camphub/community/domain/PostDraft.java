@@ -23,9 +23,9 @@ import java.time.Instant;
  * @param authorId    作者自增主键。资源级鉴权靠它判定"这条帖子是不是我的"
  * @param categoryId  板块自增主键（由 slug 解析而来，不是客户端直接传的数字）
  * @param title       标题
- * @param summary     摘要，由 {@link MarkdownRenderer#summarize} 派生
+ * @param summary     摘要，由 {@link ai.camphub.common.rendering.MarkdownRenderer#summarize} 派生
  * @param bodyMd      Markdown 原文
- * @param bodyHtml    净化后的 HTML，由 {@link MarkdownRenderer#render} 派生
+ * @param bodyHtml    净化后的 HTML，由 {@link ai.camphub.common.rendering.MarkdownRenderer#render} 派生
  * @param publishedAt 发布时间。<b>编辑时不得修改</b>：它表达"这条内容是什么时候出现的"，
  *                    改它会让时间线排序失去意义
  */

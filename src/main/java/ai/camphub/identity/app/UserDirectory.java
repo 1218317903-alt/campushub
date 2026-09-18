@@ -88,6 +88,31 @@ public class UserDirectory {
     }
 
     /**
+     * 按对外标识查询用户的展示信息。
+     *
+     * <h2>为什么需要它</h2>
+     * 空间成员管理（Phase 04）的操作对象是"某个成员"，而成员在 URL 上只能用
+     * 对外标识表示 —— 内部的 {@code user.id} 是可遍历的，不该出现在任何对外契约里。
+     * 成员列表返回的也是 {@code publicId}，于是"改成员角色""移除成员"
+     * 这两条路径的第一步都是"把 publicId 换算成内部主键"。
+     *
+     * <p>与 {@link #findBriefByUsername(String)} 的关系是互补而不是重复：
+     * 登录名用于"我知道对方叫什么"（发起邀请），对外标识用于"我点的是列表里那一行"
+     * （成员管理）。两者都不能互相替代 —— 昵称可以重复，而对外标识不是给人记忆的。
+     *
+     * @param publicId 用户对外标识
+     * @return 存在时返回；账号已软删除时返回空
+     */
+    @Transactional(readOnly = true)
+    public Optional<UserBrief> findBriefByPublicId(String publicId) {
+        if (publicId == null || publicId.isBlank()) {
+            return Optional.empty();
+        }
+        return userMapper.findByPublicId(publicId.strip())
+                .map(user -> new UserBrief(user.id(), user.publicId(), user.nickname(), user.avatarUrl()));
+    }
+
+    /**
      * 批量查询用户展示信息。
      *
      * @param userIds 用户自增主键集合，可为空集合

@@ -1,11 +1,17 @@
-package ai.camphub.community.api;
+package ai.camphub.common.web;
 
-import ai.camphub.common.web.Page;
 import java.util.List;
 import java.util.function.Function;
 
 /**
  * 分页响应。
+ *
+ * <h2>为什么它在 common 而不是某个业务模块</h2>
+ * 它是分页接口的<b>通用对外信封</b>：社区的帖子列表、空间的成员列表、
+ * 文档列表用的是同一个形状。它随 Phase 03 引入时放在 {@code community.api}，
+ * Phase 04 迁到这里 —— 若留在社区模块，那么任何新增的分页接口
+ * 要么依赖社区模块（一个与它无关的模块），要么复制一份信封，
+ * 而两份信封一旦分叉，前端就得为"同一个概念"写两套解析。
  *
  * <p>与 {@link Page} 的区别只有一点：这里用的是<b>对外契约</b>类型，
  * 而 {@code Page} 是应用层内部类型。分开的理由是它们的变化原因不同 ——
@@ -14,7 +20,7 @@ import java.util.function.Function;
  *
  * @param items   当前页内容
  * @param page    当前页码，从 1 开始
- * @param size    实际生效的页大小（可能与请求值不同，见 {@code app.community.feed.max-page-size}）
+ * @param size    实际生效的页大小（可能与请求值不同，见各模块配置里的 {@code max-page-size}）
  * @param total   符合筛选条件的总条数
  * @param hasNext 是否还有下一页
  * @param <T>     元素类型

@@ -1,5 +1,6 @@
 package ai.camphub.community.api;
 
+import ai.camphub.common.web.PageResponse;
 import ai.camphub.community.app.CommentService;
 import ai.camphub.community.config.CommunityProperties;
 import ai.camphub.identity.domain.UserPrincipal;

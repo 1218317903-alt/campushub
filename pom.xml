@@ -47,7 +47,7 @@
        /api/v1/system/info 也由此取数。改动这里即改动全项目对外报出的版本，
        不允许在 yml、前端或代码里再写一份。
        发布态不带 -SNAPSHOT；下一次开发的开发态再改为下一版本的 -SNAPSHOT。 -->
-  <version>0.3.0</version>
+  <version>0.4.0</version>
   <packaging>jar</packaging>
 
   <name>CampusHub AI</name>

@@ -26,6 +26,10 @@ logging:
     ai.camphub.system.infrastructure: DEBUG
     ai.camphub.community.infrastructure: DEBUG
     ai.camphub.identity.infrastructure: DEBUG
+    # workspace 的 Mapper 同样打开：第三层防线（WorkspaceScopeInterceptor）
+    # 改写 SQL 时也在 debug 级别打日志，而"它到底追加了什么条件"是排查
+    # "这条查询为什么查不到数据"的第一个问题
+    ai.camphub.workspace.infrastructure: DEBUG
 
 # ---------------------------------------------------------------------------
 # 合成演示数据（Synthetic Demo Seed）：**只在本地 profile 打开**

@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- note 表访问。全部方法都接受 WorkspaceScopeInterceptor 追加空间过滤。 -->
+<mapper namespace="ai.camphub.workspace.infrastructure.NoteMapper">
+
+    <!-- 列表项与详情各有一套映射、各选一套列。
+         列表刻意**不查** body_md / body_html —— 它们是 MEDIUMTEXT，
+         一页 20 条会把几百 KB 的正文搬进内存再丢掉（ADR 0005）。 -->
+    <resultMap id="NoteSummaryMap" type="ai.camphub.workspace.domain.NoteSummary">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="title" javaType="java.lang.String"/>
+            <arg column="summary" javaType="java.lang.String"/>
+            <arg column="author_id" javaType="_long"/>
+            <arg column="updated_by" javaType="_long"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+            <arg column="updated_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="NoteDetailMap" type="ai.camphub.workspace.domain.NoteDetail">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="workspace_id" javaType="_long"/>
+            <arg column="title" javaType="java.lang.String"/>
+            <arg column="summary" javaType="java.lang.String"/>
+            <arg column="body_md" javaType="java.lang.String"/>
+            <arg column="body_html" javaType="java.lang.String"/>
+            <arg column="author_id" javaType="_long"/>
+            <arg column="updated_by" javaType="_long"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+            <arg column="updated_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="noteSummaryColumns">
+        n.id, n.public_id, n.title, n.summary, n.author_id, n.updated_by,
+        n.created_at, n.updated_at
+    </sql>
+
+    <!-- body_md 与 body_html 由服务端从同一份输入一次性派生，因此一起插入。
+         分两次写会留下"HTML 是按旧正文渲染的"这种中间态（ADR 0005）。 -->
+    <insert id="insert">
+        INSERT INTO note (public_id, workspace_id, author_id, updated_by, title, summary, body_md, body_html)
+        VALUES (#{note.publicId},
+                #{note.workspaceId},
+                #{note.authorId},
+                #{note.updatedBy},
+                #{note.title},
+                #{note.summary},
+                #{note.bodyMd},
+                #{note.bodyHtml})
+    </insert>
+
+    <!-- 按 (空间, 对外标识) 定位。public_id 单独也是唯一的，
+         但把空间条件写进 WHERE 之后，"取到的是不是这个空间里的笔记"在查询层面就不可能出错，
+         不需要调用方再补一次比对 —— 而任何"必须先比对再使用"的返回值都存在忘记比对的可能。 -->
+    <select id="findDetail" resultMap="NoteDetailMap">
+        SELECT n.id, n.public_id, n.workspace_id, n.title, n.summary, n.body_md, n.body_html,
+        n.author_id, n.updated_by, n.created_at, n.updated_at
+        FROM note n
+        WHERE n.workspace_id = #{workspaceId}
+        AND n.public_id = #{publicId}
+        AND n.deleted_at IS NULL
+    </select>
+
+    <!-- 排序用 updated_at 倒序（"最近改过的排前面"），并以 id 兜底：
+         同一毫秒内创建的多条笔记若只按时间排序，分页会漏行或重复行。 -->
+    <select id="findSummaries" resultMap="NoteSummaryMap">
+        SELECT
+        <include refid="noteSummaryColumns"/>
+        FROM note n
+        WHERE n.workspace_id = #{workspaceId}
+        AND n.deleted_at IS NULL
+        ORDER BY n.updated_at DESC, n.id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByWorkspace" resultType="long">
+        SELECT COUNT(*)
+        FROM note n
+        WHERE n.workspace_id = #{workspaceId}
+        AND n.deleted_at IS NULL
+    </select>
+
+    <!-- author_id 不在更新列里：它决定删除权限，被改写等于把别人的笔记过户到自己名下。
+         这是把它排除在 SQL 之外，而不是靠调用方不去传。 -->
+    <update id="update">
+        UPDATE note
+        SET title = #{note.title},
+        summary = #{note.summary},
+        body_md = #{note.bodyMd},
+        body_html = #{note.bodyHtml},
+        updated_by = #{note.updatedBy}
+        WHERE workspace_id = #{note.workspaceId}
+        AND public_id = #{note.publicId}
+        AND deleted_at IS NULL
+    </update>
+
+    <!-- 按主键定位，语句里没有 workspace_id ——
+         第三层防线在这里追加的条件是这道操作的最后一道闸门。 -->
+    <update id="softDelete">
+        UPDATE note
+        SET deleted_at = #{now}
+        WHERE id = #{id}
+        AND deleted_at IS NULL
+    </update>
+
+</mapper>
