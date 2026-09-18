@@ -70,6 +70,40 @@ class CommunityDiscussionIT extends AbstractIntegrationTest {
     class Comments {
 
         @Test
+        @DisplayName("帖子删除后，已知评论 ID 也不能读取其回复")
+        void deletedPost_hidesRepliesByCommentId() throws Exception {
+            TestAccount author = registerAccount(nextIp());
+            String post = createPost(author.tokens().access(), "删除帖子后的回复隔离");
+            String parent = JsonPath.read(comment(author.tokens().access(), post,
+                    "父评论", null).body(), "$.publicId");
+            assertThat(comment(author.tokens().access(), post, "回复正文", parent).statusCode())
+                    .isEqualTo(201);
+            String path = "/api/v1/community/comments/" + parent + "/replies";
+            assertThat(get(path).statusCode()).isEqualTo(200);
+            assertThat(sendJson("DELETE", "/api/v1/community/posts/" + post,
+                    null, author.tokens().access()).statusCode()).isEqualTo(204);
+            assertThat(get(path).statusCode()).isEqualTo(404);
+        }
+
+        @Test
+        @DisplayName("最大整数页码不溢出为负数，返回空页")
+        void hugePage_returnsEmptyPage() throws Exception {
+            TestAccount author = registerAccount(nextIp());
+            String post = createPost(author.tokens().access(), "分页边界");
+            String parent = JsonPath.read(comment(author.tokens().access(), post,
+                    "父评论", null).body(), "$.publicId");
+            for (String path : List.of(
+                    "/api/v1/community/posts",
+                    "/api/v1/community/posts/" + post + "/comments",
+                    "/api/v1/community/comments/" + parent + "/replies",
+                    "/api/v1/community/me/favorites")) {
+                var response = getWithToken(path + "?page=2147483647&size=50", author.tokens().access(), Map.of());
+                assertThat(response.statusCode()).as(path).isEqualTo(200);
+                assertThat(JsonPath.<List<?>>read(response.body(), "$.items")).isEmpty();
+            }
+        }
+
+        @Test
         @DisplayName("顶层评论与回复都能发表，评论总数含回复")
         void shouldCreateTopLevelCommentAndReply() throws Exception {
             TestAccount author = registerAccount(nextIp());

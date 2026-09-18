@@ -75,7 +75,7 @@ public interface PostMapper {
                                     @Param("tagSlug") String tagSlug,
                                     @Param("sort") PostSort sort,
                                     @Param("limit") int limit,
-                                    @Param("offset") int offset);
+                                    @Param("offset") long offset);
 
     /**
      * 统计符合筛选条件的帖子总数，用于计算分页。
@@ -103,7 +103,7 @@ public interface PostMapper {
      */
     List<PostSummary> findFavoriteSummaries(@Param("userId") long userId,
                                             @Param("limit") int limit,
-                                            @Param("offset") int offset);
+                                            @Param("offset") long offset);
 
     /**
      * 统计某用户收藏的帖子数。

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- workspace_invite 表访问。方法上的 @ScopedTable / @Unscoped 见 WorkspaceInviteMapper.java。
+     两条兑换路径上的语句刻意不受空间过滤，理由写在那两个方法上。 -->
+<mapper namespace="ai.camphub.workspace.infrastructure.WorkspaceInviteMapper">
+
+    <!-- 枚举列只写 javaType，不指名 typeHandler（原因见 WorkspaceMapper.xml 的 WorkspaceMap）。
+         同一张表里两个枚举各写各的 javaType，互不影响。 -->
+    <resultMap id="InviteMap" type="ai.camphub.workspace.domain.WorkspaceInvite">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="code" javaType="java.lang.String"/>
+            <arg column="workspace_id" javaType="_long"/>
+            <arg column="inviter_id" javaType="_long"/>
+            <arg column="invitee_id" javaType="_long"/>
+            <arg column="role" javaType="ai.camphub.workspace.domain.WorkspaceMemberRole"/>
+            <arg column="status" javaType="ai.camphub.workspace.domain.InviteStatus"/>
+            <arg column="expires_at" javaType="java.time.Instant"/>
+            <arg column="accepted_at" javaType="java.time.Instant"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <insert id="insert">
+        INSERT INTO workspace_invite (code, workspace_id, inviter_id, invitee_id, role, expires_at)
+        VALUES (#{invite.code},
+                #{invite.workspaceId},
+                #{invite.inviterId},
+                #{invite.inviteeId},
+                #{invite.role},
+                #{invite.expiresAt})
+    </insert>
+
+    <!-- 兑换定位。两个条件缺一不可：
+           invitee_id = 当前用户 —— 定向邀请，非受邀人拿到码也查不到（返回空 → 404），
+                                  从而不会泄漏"这个码是否存在"；
+           status = 'PENDING'   —— 已兑换/已撤销的码不再命中。
+
+         过期判断刻意不写在 SQL 里：过期需要与"码不存在"给出不同的错误码
+         （40020 与 40400），所以必须把行取回 Java 之后按同一个应用时钟判断，
+         而不是让数据库按它自己的 CURRENT_TIMESTAMP 先把它过滤掉。 -->
+    <select id="findRedeemable" resultMap="InviteMap">
+        SELECT id, code, workspace_id, inviter_id, invitee_id, role, status,
+        expires_at, accepted_at, created_at
+        FROM workspace_invite
+        WHERE code = #{code}
+        AND invitee_id = #{userId}
+        AND status = 'PENDING'
+    </select>
+
+    <!-- 条件更新承担"一次性"语义：两个并发请求同时兑换同一个码，
+         只有一个能把 PENDING 改走，另一个影响 0 行。
+         调用方按影响行数判定谁赢了，而不是"先查后改"——后者在并发下会写出两条成员关系。 -->
+    <update id="markAccepted">
+        UPDATE workspace_invite
+        SET status = 'ACCEPTED',
+        accepted_at = #{now}
+        WHERE id = #{id}
+        AND status = 'PENDING'
+    </update>
+
+    <!-- 时间比较用应用传入的 now，不用 CURRENT_TIMESTAMP：
+         列表里显示的"还有多久过期"必须与判定的依据是同一个时钟。
+         LIMIT 是必需的：待处理邀请没有天然上界（一个管理员可以反复邀请不同的人）。 -->
+    <select id="findPending" resultMap="InviteMap">
+        SELECT id, code, workspace_id, inviter_id, invitee_id, role, status,
+        expires_at, accepted_at, created_at
+        FROM workspace_invite
+        WHERE workspace_id = #{workspaceId}
+        AND status = 'PENDING'
+        AND expires_at > #{now}
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- workspace_id 条件不可省：见接口方法上的说明 —— 只按 code 撤销，
+         会让"我在别的空间里也是成员"变成一次跨空间的越权改状态。
+         status = 'PENDING' 让"撤销一条已兑换的邀请"影响 0 行，由调用方翻成 404。 -->
+    <update id="revoke">
+        UPDATE workspace_invite
+        SET status = 'REVOKED'
+        WHERE workspace_id = #{workspaceId}
+        AND code = #{code}
+        AND status = 'PENDING'
+    </update>
+
+</mapper>

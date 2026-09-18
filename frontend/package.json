@@ -1,6 +1,6 @@
 {
   "name": "camphub-frontend",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "CampusHub AI 前端（Vue 3 + TypeScript + Vite）",
@@ -11,7 +11,8 @@
     "dev": "vite",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json"
+    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json",
+    "test": "node tests/run.mjs"
   },
   "dependencies": {
     "@arco-design/web-vue": "^2.57.0",

@@ -3,14 +3,7 @@ import { computed, onMounted } from 'vue'
 
 import { useAppStore } from '@/stores/app'
 
-/**
- * 概览页。
- *
- * 这是 Phase 01 唯一的页面，作用是**证明整条链路是通的**：
- * 浏览器 → dev proxy → Spring MVC → Service → MyBatis → MySQL(app_metadata) → 回到页面。
- * 页面上的每一项都来自真实后端，没有硬编码的占位数据 ——
- * 否则「基础设施就绪」就只是自我声明，而不是可验证的事实。
- */
+/** 独立的运行状态页，展示真实后端与数据库信息。 */
 const store = useAppStore()
 
 onMounted(() => {
@@ -53,10 +46,9 @@ const infoRows = computed(() => {
 <template>
   <div class="ch-page">
     <section class="ch-hero">
-      <h1 class="ch-hero__title">工程基础已就绪</h1>
+      <h1 class="ch-hero__title">运行状态</h1>
       <p class="ch-hero__desc">
-        CampusHub AI 的 Phase 01。本页所有数据均实时取自后端与数据库，用于验证工程骨架、
-        统一错误契约、配置管理、日志链路与数据访问链路端到端可用。
+        查看当前服务的版本、连接状态与响应信息。
       </p>
     </section>
 
@@ -111,15 +103,7 @@ const infoRows = computed(() => {
       </a-result>
     </a-spin>
 
-    <section class="ch-scope">
-      <h2 class="ch-scope__title">本阶段交付范围</h2>
-      <ul class="ch-scope__list">
-        <li><strong>后端</strong>：Spring Boot 4.1.1 · 统一异常与错误响应 · traceId 日志链路 · Flyway 迁移 · MyBatis</li>
-        <li><strong>前端</strong>：Vue 3 + TypeScript + Vite · 路由懒加载 · Pinia · Arco Design · 与后端错误契约对齐的 HTTP 客户端</li>
-        <li><strong>工程</strong>：Docker Compose（MySQL 8.4）· 单元测试 + ArchUnit 模块边界 + Testcontainers 集成测试</li>
-        <li><strong>未包含</strong>：登录鉴权、社区内容、Workspace、搜索与 AI 能力 —— 均按计划在后续 Phase 引入</li>
-      </ul>
-    </section>
+
   </div>
 </template>
 
@@ -177,8 +161,7 @@ const infoRows = computed(() => {
   margin-bottom: 16px;
 }
 
-.ch-card__title,
-.ch-scope__title {
+.ch-card__title {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
@@ -194,22 +177,5 @@ const infoRows = computed(() => {
 
 .ch-value {
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.ch-scope {
-  padding: 20px;
-  border: 1px solid var(--ch-border);
-  border-radius: var(--ch-radius);
-  background: var(--ch-bg-surface);
-}
-
-.ch-scope__list {
-  margin: 12px 0 0;
-  padding-left: 20px;
-  color: var(--ch-text-secondary);
-}
-
-.ch-scope__list li + li {
-  margin-top: 6px;
 }
 </style>

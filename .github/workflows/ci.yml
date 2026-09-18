@@ -102,5 +102,8 @@ jobs:
 
       # 包含 vue-tsc 类型检查。strictTemplates 已开启，
       # 模板里拼错的组件名会在这里被拦下，而不是上线后静默失效。
+      - name: 前端认证回归测试
+        run: npm test
+
       - name: 类型检查与生产构建
         run: npm run build

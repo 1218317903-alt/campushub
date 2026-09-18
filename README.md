@@ -8,12 +8,20 @@
 
 | | |
 |---|---|
-| **当前版本** | `v0.3.0` · Phase 03 · Community MVP & Bootstrap |
+| **当前版本** | `v0.4.0` · Phase 04 · Workspace & Resource Authorization |
 | **工程约束** | [V2 · 项目宪法](docs/00-工程规约.md)（最高效力） |
 | **执行计划** | [Phase 01 ~ 13](docs/12-phase-plan.md) |
 | **技术基线** | Java 21 · Spring Boot 4.1.1 · MySQL 8.4 · Vue 3 + TypeScript |
 
 ---
+
+## Phase 01–03 质量复查（随 `v0.4.0` 发布）
+
+2026-09-18 已修复刷新令牌并发轮换、刷新暂时失败误登出、删除帖子后回复仍可读、
+分页溢出与限流内存上限问题；补充架构边界及前端认证回归测试。
+完整发现、取舍与验收记录见 [质量复查报告](docs/reports/phase-01-03-quality-review.md)。
+
+前端验证：在 `frontend` 下执行 `npm test` 和 `npm run build`；后端执行 `./mvnw -B clean verify`。
 
 ## 5 分钟上手
 
@@ -43,8 +51,8 @@ make fe-dev
 > 即 `NODE_OPTIONS= make fe-install`。原因与排查过程见
 > [`docs/11-开发环境.md`](docs/11-开发环境.md) §2.1。**普通开发机无需此操作。**
 
-打开 <http://localhost:5173>，页面上的「运行实例信息」应显示**真实**后端数据，
-以及社区信息流（`local` profile 会写入一批合成演示数据，见下）。
+打开 <http://localhost:5173>，首页进入社区信息流（`local` profile 会写入合成演示数据）。
+「运行状态」导航对应 `/system`，其中的实例信息来自真实后端。
 
 其中「数据库 Schema 基线」应**等于 `src/main/resources/db/migration/` 里编号最大的那个迁移版本**
 （当前为 `V4`），它说明 Flyway 迁移已真实生效。这里刻意不写死一个数字：
@@ -138,6 +146,22 @@ node scripts/bench/query-baseline.mjs --username demo01 --password 'CampusHub-De
 点赞 / 收藏 / 浏览，社区信息流、详情、发布编辑、我的收藏，前端登录态与令牌静默续期，
 以及一份"从零部署即有内容"的合成演示数据与一份可复现的只读接口基线测量。
 
+**Phase 04 已完成**（`v0.4.0`）：协作空间与**资源级鉴权** —— 空间 / 成员 / 定向邀请 /
+协作笔记 / 文档（上传 · 下载 · 删除，字节落本地磁盘）。
+
+> **三层防线**（[设计文档](docs/resource-authorization.md)）：
+> ① `@PreAuthorize` 只判**身份能力**（失败 403）；
+> ② `AuthorizationService.assertCan` 判**这一条数据**能不能动
+> （不可见一律 **404**，可见但无权限才 403）；
+> ③ MyBatis 拦截器按 `@ScopedTable` 给 SQL 追加空间范围，
+> 授权集合为空时退化成 `1 = 0`。
+> 第 ③ 层是**防护网**，专门覆盖"某条查询忘了带 `workspace_id`"这一类静默越权 ——
+> 它由构建期断言强制：每条私有查询必须在 `@ScopedTable` 与 `@Unscoped("理由")` 之间二选一。
+>
+> **判定的两个硬约定**：拥有者只记在 `workspace.owner_id`，**不**重复写入成员表
+> （避免两份必须同步的真相）；邀请是**定向**的，只有被邀请人能兑换，
+> 非受邀人凭同一串码兑换返回 404（不泄漏"这个码是否存在"）。
+
 > **社区内容是「读公开、写必须登录」。** 公开端点由 `SecurityConfig` **逐条列出**
 > （板块、标签、帖子列表、详情、评论列表、回复列表），而不是放行整个前缀 ——
 > 这样新增接口默认需要认证，要公开就必须出现在 diff 里。
@@ -152,7 +176,7 @@ node scripts/bench/query-baseline.mjs --username demo01 --password 'CampusHub-De
 > 一个"能启动但人人可猜"的默认密钥，等于把所有用户的账号交给第一个读到源码的人。
 
 后续阶段按 [Phase 计划](docs/12-phase-plan.md) 推进：
-Workspace 与资源级鉴权 → 对象存储 → 数据采集 → 搜索 →
+对象存储与文档工作流 → 数据采集 → 搜索 →
 RAG → 性能工程 → 通知与审核 → Agent Runtime → Agent 安全 → 服务化与可观测。
 
 ### 认证流程速览
@@ -222,14 +246,25 @@ CampusHubAI/
 ├── src/main/java/ai/camphub/
 │   ├── common/            共享内核：异常、错误契约、traceId、配置、来源 IP 解析
 │   │   ├── error/         ErrorCode · ApiError · BusinessException · GlobalExceptionHandler
-│   │   ├── web/           TraceIdFilter · ClientIpResolver
-│   │   └── config/        AppProperties · RequestProperties · OpenApiConfig
+│   │   ├── web/           TraceIdFilter · ClientIpResolver · PageResponse
+│   │   ├── rendering/     MarkdownRenderer（社区与空间共用的渲染边界，ADR 0005）
+│   │   └── config/        AppProperties · RequestProperties · OpenApiConfig · RenderingConfig
 │   ├── system/            模块（四层：api / app / domain / infrastructure）
 │   ├── identity/          模块：账号体系与鉴权（Phase 02）
 │   │   ├── api/           AuthController · UserController + 请求/响应 DTO
 │   │   ├── app/           认证 / 账号 / 会话 / 令牌服务 · 限流器
 │   │   ├── domain/        User · UserCredential · UserPrincipal · PasswordPolicy …
 │   │   └── infrastructure/ Mapper + XML · security/（JWT 过滤器与编解码）
+│   ├── community/         模块：社区内容域（Phase 03）
+│   ├── workspace/         模块：协作空间与资源级鉴权（Phase 04）
+│   │   ├── api/           Workspace · Note · Document · Invite 控制器 + DTO
+│   │   ├── app/           Workspace / Note / Document 服务 · AuthorizationService（第二层防线）
+│   │   │                  · ObjectStorage（端口）· WorkspaceScopeContext（范围绑定）
+│   │   ├── domain/        Workspace · WorkspaceMember · WorkspaceInvite · Note · Document
+│   │   │                  · WorkspaceAction（权限矩阵）· WorkspaceVisibility …
+│   │   └── infrastructure/ 五个 Mapper + XML
+│   │                       · scope/（第三层防线：拦截器 · SQL 改写 · 请求结束清理）
+│   │                       · storage/（LocalFileObjectStorage）
 │   └── platform/          平台能力：audit/（安全审计写入）
 ├── src/main/resources/
 │   ├── application.yml    基础配置（入库，不含凭据）
@@ -237,8 +272,9 @@ CampusHubAI/
 │   ├── mapper/            MyBatis XML
 │   └── security/          常见弱密码表（启动时载入内存）
 ├── src/test/java/ai/camphub/
-│   ├── architecture/      ArchUnit 模块边界断言
+│   ├── architecture/      ArchUnit 模块边界断言（9 条，构建期失败）
 │   ├── support/           Testcontainers 与集成测试基类（含认证夹具）
+│   ├── workspace/         权限矩阵 · SQL 改写 · 标注覆盖 · 本地存储 · 跨用户攻击（IT）
 │   └── **/*IT.java        集成测试
 ├── frontend/              Vue 3 + TypeScript（独立构建）
 │   └── src/api/http.ts    与后端错误契约对齐的 HTTP 客户端
@@ -268,6 +304,7 @@ CampusHubAI/
 | [docs/01-product.md](docs/01-product.md) | 产品定位 · 核心用户 · 使用场景 · 主流程 · 信息架构 · MVP 范围 |
 | [docs/02-architecture.md](docs/02-architecture.md) | 模块边界 · 技术选型与取舍 · 过度设计识别 |
 | [docs/03-domain-permission.md](docs/03-domain-permission.md) | 核心领域模型 · 数据库模型 · 权限模型 |
+| [docs/resource-authorization.md](docs/resource-authorization.md) | **资源级授权**：三层防线 · 权限矩阵 · 404/403 边界 · 数据范围过滤 · 定向邀请 · 文档存储 |
 | [docs/04-security.md](docs/04-security.md) | Web 安全 · 爬虫安全 · AI 安全 |
 | [docs/05-data-platform.md](docs/05-data-platform.md) | 数据 Bootstrap · 合规来源 · 采集管线 · 文档处理 |
 | [docs/06-search-ai.md](docs/06-search-ai.md) | 搜索架构 · RAG 架构 · Agent 架构 · Multi-Agent 引入条件 |
@@ -284,6 +321,8 @@ CampusHubAI/
 | [0001](docs/adr/0001-modular-monolith.md) | 采用模块化单体，且**边界必须由构建期断言守护** |
 | [0002](docs/adr/0002-spring-boot-4-and-mybatis.md) | 技术基线锁定 Spring Boot 4.1.1 与官方 MyBatis |
 | [0003](docs/adr/0003-unified-error-contract.md) | 统一错误契约：错误有信封，成功无信封 |
+| [0004](docs/adr/0004-content-stats-placement.md) | 内容统计（点赞/评论/浏览计数）的存放位置 |
+| [0005](docs/adr/0005-content-rendering-boundary.md) | 内容渲染边界：Markdown 渲染器由社区与空间共用 |
 
 ---
 

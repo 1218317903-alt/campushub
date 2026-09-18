@@ -15,8 +15,13 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/',
     name: 'home',
-    component: () => import('@/views/HomeView.vue'),
-    meta: { title: '概览' },
+    redirect: { name: 'community' },
+  },
+  {
+    path: '/system',
+    name: 'system-status',
+    component: () => import('@/views/SystemStatusView.vue'),
+    meta: { title: '运行状态' },
   },
   {
     path: '/community',
@@ -37,8 +42,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '我的收藏', requiresAuth: true },
   },
   {
-    // 静态段 /community/new 与 /community/favorites 必须排在它前面，
-    // 否则 :publicId 会把 "new" 当成帖子标识吃掉（vue-router 按定义顺序匹配）
     path: '/community/posts/:publicId',
     name: 'post-detail',
     component: () => import('@/views/community/PostDetailView.vue'),

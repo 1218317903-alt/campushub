@@ -101,7 +101,7 @@ export interface AuthBridge {
    * @returns 刷新成功返回 true；刷新令牌也失效时返回 false（此时调用方应引导重新登录）
    */
   refreshTokens(): Promise<boolean>
-  /** 确认会话已失效（刷新失败），由 store 清理本地状态 */
+  /** 确认凭据已失效，由 store 清理本地状态；暂时性刷新故障应抛异常 */
   onSessionLost(): void
 }
 

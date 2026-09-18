@@ -48,7 +48,13 @@ spring:
     # 校验和检查会在这里帮我们拦住这种改动。
     clean-disabled: true
 
-  # HTTP 请求体大小上限：Phase 05 之前没有文件上传，保守设置
+  # HTTP 请求体大小上限：容器级硬上限。
+  # 它是**两道闸门里的外面那道** —— 在解析请求体时就拦下超限的上传，
+  # 因此它不可能被任何服务层校验替代。应用自己的上限
+  # （app.workspace.documents.max-size-bytes）刻意更小，让"文件太大"
+  # 由业务判断并返回统一错误信封；这一道只在"连解析都不该继续"时触发，
+  # 由 GlobalExceptionHandler 翻成 413（不翻的话会落到兜底的 500，
+  # 而 5xx 会让客户端反复重试同一个超大文件）。
   servlet:
     multipart:
       max-file-size: 20MB
@@ -146,6 +152,74 @@ app:
       max-body-length: 30000
       # 与 post.summary VARCHAR(300) 对齐；改这里必须同时改列宽，否则插入会报错
       summary-length: 300
+    feed:
+      default-page-size: 20
+      # 服务端强制的页大小上限。超过时按上限截断而不是报错
+      max-page-size: 50
+
+  # -------------------------------------------------------------------------
+  # 协作空间（Phase 04）
+  # -------------------------------------------------------------------------
+  # 与社区块同一条纪律：数字都是**资源保护参数**，决定单个请求能让服务端做多少工作。
+  #
+  # ⚠️ 缩进层级就是契约：本块必须是 app.workspace，与 WorkspaceProperties 的
+  #    prefix 一致。写成顶层 workspace: 时 Spring **不会报错** ——
+  #    应用照常启动，直到第一次上传文档才以一个 NullPointerException 暴露，
+  #    而报错位置（某个 service 里 properties() 为空）与真正的原因之间隔着好几层。
+  #    ApplicationConfigStructureTest 逐个键断言它们存在于正确的位置。
+  # -------------------------------------------------------------------------
+  workspace:
+    limits:
+      # 与 workspace.name VARCHAR(80) / description VARCHAR(500) 对齐。
+      # 调大到超过列宽会让插入报错，两处必须一起改。
+      max-name-length: 80
+      max-description-length: 500
+    members:
+      # 单个空间的最大成员数（不含拥有者）。
+      # 这是**资源保护上限**：成员列表与"是否已满"的校验都会被它约束住大小
+      # （判断是否已满靠数成员行，因此这个值同时是那次查询的上界）。
+      max-members: 50
+      # 邀请码有效期。太短会让"发出去还没来得及点"变成常态，
+      # 太长等于给一个长期有效的入门口令。72 小时覆盖一个周末。
+      invite-valid-hours: 72
+    notes:
+      # 与 note.title VARCHAR(200) / summary VARCHAR(300) 对齐
+      max-title-length: 200
+      # 与 app.community.post.max-body-length 取同一个值。
+      # 它是**资源保护上限而非体验问题**：正文每次写入都要被渲染成 HTML
+      # 并跑一遍白名单净化，代价与输入长度成正比。
+      # 两处必须一致 —— 否则同一段内容在帖子里能发、在笔记里不能发。
+      max-body-length: 30000
+      summary-length: 300
+    documents:
+      # 应用级上限（10 MiB），**小于** spring.servlet.multipart.max-file-size。
+      # 让"文件太大"由业务判断并返回统一错误信封，而不是让容器抛出形状不同的异常。
+      max-size-bytes: 10485760
+      # 本地存储根目录。Phase 05 引入对象存储后本项会被 bucket 与端点配置取代，
+      # 因此代码里对它的引用只应存在于适配器装配处（WorkspaceConfig#objectStorage）。
+      # 该目录已被 .gitignore 忽略：它是运行期数据，不是源码。
+      storage-dir: ${APP_WORKSPACE_STORAGE_DIR:./data/workspace-documents}
+      # 允许声明的 MIME 类型白名单。用白名单而不是黑名单 ——
+      # 黑名单永远列不完，而漏掉的那一项就是一次真实的放行。
+      allowed-types:
+        - text/plain
+        - text/markdown
+        - text/csv
+        - application/json
+        - application/pdf
+        - application/zip
+        - application/msword
+        - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+        - application/vnd.ms-excel
+        - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+        - application/vnd.openxmlformats-officedocument.presentationml.presentation
+        - image/png
+        - image/jpeg
+        - image/gif
+      # 下载时是否允许浏览器内联打开。**默认 false 且不建议改动**：
+      # 内联意味着用户上传的内容会在本站域的源下被浏览器解析渲染，
+      # 这正是"上传一个 HTML 就得到一个 XSS"的成因。
+      download-inline: false
     feed:
       default-page-size: 20
       # 服务端强制的页大小上限。超过时按上限截断而不是报错

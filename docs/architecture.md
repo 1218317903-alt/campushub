@@ -6,14 +6,14 @@
 > **维护纪律**：本文是活文档。每次 Phase 结束、或任何影响链路/契约/目录结构的改动，
 > 都必须同步更新本文（`docs/00-工程规约.md` §16.3）。**文档与代码不一致时，以代码为准，并立即修文档**。
 >
-> **最后更新**：Phase 03（`v0.3.0`）
+> **最后更新**：2026-09-18 · Phase 01–03 质量修复（未发布）
 > **权威程度**：实现级说明；与 `00-工程规约.md` 冲突时以规约为准，与代码冲突时以代码为准。
 
 ---
 
 ## 1. 运行时构成
 
-当前（Phase 01）只有两个进程 + 一个依赖：
+当前（Phase 03）只有两个进程 + 一个依赖：
 
 ```
 ┌───────────────────────┐        ┌───────────────────────┐        ┌──────────────────┐
@@ -60,9 +60,11 @@ CampusHubAI/
 ai.camphub
 ├── CamphubApplication.java          唯一启动类
 ├── common/                          共享内核（只能被依赖，不能依赖业务模块）
-│   ├── config/                      AppProperties · RequestProperties · OpenApiConfig
+│   ├── config/                      AppProperties · RequestProperties · OpenApiConfig ·
+│   │                                RenderingConfig
 │   ├── error/                       ErrorCode · ApiError · BusinessException · GlobalExceptionHandler
-│   └── web/                         TraceIdFilter · ClientIpResolver
+│   ├── rendering/                   MarkdownRenderer（社区与空间共用的渲染边界，ADR 0005）
+│   └── web/                         TraceIdFilter · ClientIpResolver · PageResponse
 ├── system/                          模块（Phase 01）
 │   ├── api/         ← 对外边界：Controller + Request/Response DTO
 │   ├── app/         ← 应用服务：事务边界、权限校验、编排
@@ -85,14 +87,31 @@ ai.camphub
 │                                    ApiErrorResponseWriter · CommonPasswordList
 ├── community/                       模块（Phase 03）：帖子·板块·标签·评论·互动
 │   ├── api/                         PostController · CommentController · CommunityController ·
-│   │                                PageResponse · CurrentUser + Request/Response DTO
+│   │                                CurrentUser + Request/Response DTO
 │   ├── app/                         PostService · CommentService · ReactionService ·
 │   │                                TagService · FeedQuery · PostCommand ·
 │   │                                PostCardView · PostDetailView · CommentView · ReactionResult
 │   ├── config/                      CommunityProperties（帖子/评论/标签的各类上限）
 │   ├── domain/                      Post · PostSummary · PostDetail · Comment · Category ·
-│   │                                Tag · TagAssignment · MarkdownRenderer · Slugifier
+│   │                                Tag · TagAssignment · Slugifier
 │   └── infrastructure/              (Mapper + XML)
+├── workspace/                       模块（Phase 04）：协作空间与资源级鉴权
+│   ├── api/                         WorkspaceController · NoteController · DocumentController ·
+│   │                                InviteController + Request/Response DTO
+│   ├── app/                         WorkspaceService · NoteService · DocumentService ·
+│   │                                AuthorizationService（第二层防线）·
+│   │                                ObjectStorage（端口）· WorkspaceScopeContext（范围绑定）·
+│   │                                WorkspaceAccess · WorkspaceSummary · InviteView
+│   ├── config/                      WorkspaceProperties（app.workspace.*）
+│   ├── domain/                      Workspace · WorkspaceMember · WorkspaceInvite · Note ·
+│   │                                WorkspaceDocument · WorkspaceAction（权限矩阵）·
+│   │                                WorkspaceRoleInContext · WorkspaceVisibility ·
+│   │                                ScopedTable · Unscoped
+│   └── infrastructure/
+│       ├── (五个 Mapper + XML)
+│       ├── scope/                   WorkspaceScopeInterceptor（第三层防线）· WorkspaceScopeSql ·
+│       │                            WorkspaceScopeResetFilter
+│       └── storage/                 LocalFileObjectStorage
 ├── bootstrap/                       组装点（Phase 03）：DemoSeedRunner · DemoContentLibrary ·
 │                                    DemoSeedProperties
 └── platform/                        平台能力（非业务域）
@@ -329,7 +348,8 @@ Tomcat 复用线程。不清理会把上一个请求的 traceId 带到下一个�
 请求 → 401 + code=40101（访问令牌已过期）
      → authBridge.refreshTokens()      ← 由 auth store 实现；HTTP 层只依赖接口，不 import store
      → 成功：重放原请求一次
-     → 失败：onSessionLost() 清理本地状态，把原错误抛给调用方
+     → 凭据失效：onSessionLost() 清理本地状态，把原错误抛给调用方
+     → 网络 / 429 / 5xx：保留会话，抛出实际故障
 ```
 
 三条边界是刻意的：
@@ -346,9 +366,56 @@ Tomcat 复用线程。不清理会把上一个请求的 traceId 带到下一个�
 
 **刷新令牌放在 `localStorage` 是一个明确知情的取舍**：换来"关掉浏览器再打开仍是登录状态"
 （这与 30 天有效期本来的语义一致），代价是 XSS 一旦发生，攻击者可以直接取走长期凭据。
-当前压低风险的是"全仓库只有一处 `v-html`，且其内容由服务端净化"（见 ADR 0004）。
+当前压低风险的是"全仓库只有一处 `v-html`，且其内容由服务端净化"（见 ADR 0005）。
 正确的收口方式是把刷新令牌改为 `httpOnly` Cookie 并补上 CSRF 防护，届时访问令牌可以只放内存
 —— 记录在 §10，不作为遗留盲点。
+
+### 3.8 私有资源的三层防线（Phase 04）
+
+社区只有两类数据：公开的（谁都能读）与自己的（只有作者能改）。Phase 04 引入第三类 ——
+**属于一个小组的私有数据**，它的判定对象是 `(我, 空间)` 这个会变的关系，
+且检索必须天然带权限：私有数据不可能"先查出来再过滤"，列表/分页/计数漏一次就是静默越权。
+
+```
+请求 → ① @PreAuthorize(hasAuthority(...)) → 403
+     → ② AuthorizationService.assertCan    → 404（不可见）/ 403（可见但无权限）
+     → ③ WorkspaceScopeInterceptor         → 授权集合为空时 1 = 0
+     → SQL
+```
+
+| 层 | 回答的问题 | 实现位置 |
+|---|---|---|
+| ① 身份能力 | 这个**身份**有没有做这类事的能力？ | 各控制器方法的 `@PreAuthorize` |
+| ② 资源判定 | 这个人对**这一条数据**能不能做这件事？ | `workspace/app/AuthorizationService` |
+| ③ 数据范围 | 这条 SQL 有没有被限制在他的空间范围内？ | `workspace/infrastructure/scope/` |
+
+**第 ① 层刻意只判身份**，不按 `docs/03 §10.3` 的原始设计用 `hasPermission` 做资源判定：
+第一层失败一律 403，而"看不到别人的空间"必须返回 404，两层都在 404 语义上下判断
+只会让"到底是谁拒绝的"变成需要读日志才能回答的问题。见
+[resource-authorization.md §2.2](resource-authorization.md)。
+
+**第 ③ 层是防护网而不是主防线。** 它只知道"这条 SQL 碰的是私有数据"，
+价值在于覆盖"某条查询忘了写 `workspace_id`"这一类失误 ——
+那种失误用自己造的数据怎么测都正常，却会在生产上把别人的私有内容返回出去。
+
+它由**构建期断言**强制（`WorkspaceScopeCoverageTest`）：每条访问私有表的
+`select`/`update`/`delete` 必须在 `@ScopedTable(column = "workspace_id")` 与
+`@Unscoped("理由")`（理由必须非空）之间二选一，`INSERT` 不得标注。
+**为什么是"二选一"而不是给个默认值**：默认过滤的失败模式是"有人显式关掉了它"，
+默认不过滤的失败模式是"有人忘了打开"，两者都要防 ——
+因此必须让人在写这条查询时被强制回答一次这个问题。
+
+`WorkspaceScopeContext` 是 `ThreadLocal`，保存本次请求的授权集合（同一请求里的
+列表 SQL + 计数 SQL 共用一份）。它**必须**被清理：Tomcat 的请求线程来自线程池，
+不清理会让下一个请求继承上一个请求的授权范围 —— 这是越权最典型的成因之一，
+且只在并发下出现。清理由 `WorkspaceScopeResetFilter` 在请求结束时**无条件**执行。
+
+权限矩阵集中在 `WorkspaceAction`（`allowedRoles()` + `isOwnershipSensitive()`），
+由 `WorkspaceActionTest` 逐格断言，而不是散在各 Service 的 `if` 里 ——
+散开之后，"普通成员到底能做什么"就只有把所有 Service 读一遍才能回答。
+
+完整规则（含 404/403 的边界、删除的归属维度、定向邀请、文档存储）见
+[docs/resource-authorization.md](resource-authorization.md)。
 
 ---
 
@@ -388,8 +455,16 @@ HHH SS
 
 当前已定义：`40000` 校验失败 · `40001` 请求不合法 · `40002` 类型错误 · `40003` 缺参 ·
 `40010` 密码策略不满足（`identity`）·
+`40020` 邀请无效或已过期 · `40021` 空间成员数已达上限 · `40022` 空间内容不符合要求 ·
+`40023` 空间拥有者不能退出（`workspace`）·
 **`40030` 板块不存在 · `40031` 帖子内容不符合要求 · `40032` 标签名不合法（`community`）** ·
-`40400` 不存在 · `40500` 方法不支持 · `41500` 内容类型不支持 · `50000` 内部错误 · `50300` 依赖不可用。
+`40400` 不存在 · `40500` 方法不支持 · `41300` 请求内容过大 · `41500` 内容类型不支持 ·
+`50000` 内部错误 · `50300` 依赖不可用。
+
+`40001` 与 `40020` / `40022` 的分工同样刻意：接口层的枚举解析失败（`WorkspaceVisibility.parse`
+拿到无法识别的取值）与字段级校验失败都是 `40001`，而"这个取值本身合法、但业务上不允许"
+（邀请过期、成员已满、空间名超长）各有自己的码 —— 否则调用方无法区分"我拼错了参数"
+与"规则不允许"。
 
 `40031` 与 `40000` 的分工是刻意的：前者管**字段格式**（必填、单字段长度这类由
 Bean Validation 声明的结构约束），后者管**业务策略**（标签数量、正文总长这类
@@ -536,6 +611,23 @@ Phase 03 踩到过一个**应用照常启动、测试照常全绿**的配置错�
     沿索引扫描一段再过滤的代价可以忽略。**等删除率真的变高再调整，而不是先加一列。**
   - **列表查询不读 `MEDIUMTEXT` 正文**：`summaryColumns` 不含 `body_md` / `body_html`，
     摘要由写入时派生并落库。列表与详情的列清单因此是两段独立的 SQL 片段。
+- **V5（Phase 04）新增 5 张 workspace 表**：`workspace` · `workspace_member` ·
+  `workspace_invite` · `document` · `note`。相对 `docs/03 §8` 有六处**刻意偏离**，
+  逐条理由写在 `V5__workspace.sql` 开头，其中两条是理解整个鉴权模型的前提：
+  - **拥有者不重复写入成员表**：`workspace.owner_id` 是唯一事实来源，`workspace_member`
+    只存 `MEMBER` / `ADMIN`。两处都记就产生了两份必须同步的真相，而漏写恰好落在鉴权判定上。
+    代价是"我能在哪些空间里"要多并一次 `owner_id`（收在
+    `AuthorizationService.authorizedWorkspaceIds` 一处）。
+  - **不设 `member_count` / `document_count` 计数列**：`post` 上的计数列是被"最热排序"这条
+    读路径逼出来的，而空间成员数没有这样的读路径。为一个没人问的数字，先在鉴权相关的表上
+    引入丢更新的风险，不划算。上限判断改为读时 `COUNT`（两者天然有界）。
+  - **`document.storage_key` 允许 NULL**，但上传路径一定写入它。允许 NULL 是为了让**历史行**
+    在 schema 层面是显式的："没有内容可下载"是一个可以被查询表达的状态，而不是靠约定。
+    下载这类行返回 503 而不是 404。
+- **V5 把 16 个权限点授予基础角色 `USER`。** "人人都有"不等于"人人都是管理员"：
+  这些码回答"身份有没有这类能力"，而"这条数据能不能给他"由第二、三层回答。
+  反过来，若把 `workspace:delete` 只授给某个"管理员角色"，"拥有者删自己的空间"
+  就会变成一件需要额外角色才能做的事。见 [resource-authorization.md](resource-authorization.md)。
 
 ---
 
@@ -612,7 +704,37 @@ JSON 解析复用容器里那个 `ObjectMapper`（Boot 4 起是 Jackson 3 的 `t
    而不是让 `application-test.yml` 全局开启。后者会让**所有**集成测试都跑一遍数据生成，
    既拖慢全套，又给别的用例引入"库里本来就有 60 条帖子"这种隐式前提。
 
-### 8.4 命令
+### 8.4 空间与资源鉴权测试的组织方式（Phase 04）
+
+权限测试与功能测试的写法不同：**它要证明的是"拒绝"**，而拒绝的成因有三层，
+若不刻意区分，测出来的永远是第一层。
+
+| 类 | 聚焦 |
+|---|---|
+| `WorkspaceActionTest` | 权限矩阵**逐格**断言（每个动作 × 每个身份）；`NONE` 永不允许；`ownedBySelf` 不会成为 `NONE` 的通行证 |
+| `WorkspaceScopeSqlTest` | SQL 改写的全部形状：空集 → `1 = 0`、无 `WHERE` / 已有 `WHERE` / 含子查询、`ORDER BY`/`LIMIT`/`GROUP BY`/`FOR UPDATE` 之前插入、`;` 之前、`INSERT`/DDL 原样返回、取值只内联数字 |
+| `WorkspaceScopeCoverageTest` | 每条私有查询必须在 `@ScopedTable` 与 `@Unscoped("理由")` 间二选一；理由非空；`INSERT` 不得标注；XML 与接口方法一一对应 |
+| `LocalFileObjectStorageTest` | 存取删、路径穿越被拒**且根目录外无残留文件**、大小不符失败、缺内容 503、删除空键 noop |
+| `WorkspaceAuthorizationIT` | 真实 HTTP + 真实 MySQL，五组：404 语义 · 可见但无权限 · 删除的归属 · 成员与邀请 · **绕过服务层的第三层防线** |
+
+四个来自实际踩坑的取舍：
+
+1. **第三层防线的测试必须绕过服务层。** 若走服务层，被拒绝的原因永远是第二层 ——
+   第三层**从未被真正执行过**。这也解释了为什么 `WorkspaceScopeContext.unscoped` 是必需的：
+   不先关掉过滤，测的是过滤而不是兜底。该组用例直接调 Mapper，
+   验证"绑定空集 → `1 = 0`""绑定到错误的空间 → 影响 0 行""`unscoped` 不吞异常"。
+2. **404 与 403 必须分别断言，不能只断言"不是 200"。** 两者是本模块最核心的语义约定
+   （不可见一律 404，不泄漏资源存在），把它们合并成"请求失败"就等于没测。
+3. **准备动作收进夹具，断言留在用例里。** `WorkspaceTestSupport` 把
+   "建空间 → 拉人 → 写内容"这些最少 4 次 HTTP 调用的准备动作收成方法，
+   但**不断言状态码**（少量"必须成功否则后续无意义"的准备方法除外）。
+   把断言藏进夹具，会让测试读起来像是通过了，而实际什么都没验证。
+   越权测试的可读性就是它的价值 —— 读的人要能一眼看出"这一步是攻击者在尝试什么"。
+4. **删除的归属断言要覆盖"两个方向"。** 只断言"成员不能删别人的"是不够的 ——
+   一个把所有删除都拒绝的实现同样能通过。因此同时断言"成员能删自己的"、
+   "拥有者与管理员能删任何一条"，以及响应里的 `deletableByMe` 与实际删除结果**一致**。
+
+### 8.5 命令
 
 ```bash
 make test      # 仅单元测试（*Test），不需要 Docker
@@ -728,6 +850,12 @@ node scripts/bench/query-baseline.mjs --username demo01 --password '<演示口�
 | 热度排序为"按点赞数倒序" | 无时间衰减、无多项加权 | Phase 09 依据基线数据决定加权口径 |
 | 社区无审核能力 | 任何登录用户可发布任意内容 | Phase 10 审核域 |
 | 社区无内容删除率数据 | 索引刻意不带 `deleted_at` 条件（见 §7） | 删除率真实升高到影响扫描量时再调整索引 |
+| 文档字节存本地磁盘，无配额与清理 | 删除文档只标记 `deleted_at`，字节仍留在磁盘上 | Phase 05 与对象存储一起设计（生命周期规则、孤儿对象回收） |
+| 空间无法转让 | 拥有者不能退出（`40023`），只能删除空间或保持原样 | 出现真实需求时新增"转让空间"，需要事务内同时改 `owner_id` 与成员角色 |
+| `TEAM` 与 `PRIVATE` 在授权上无区别 | 两者都只有拥有者与成员可见 | 与 Phase 06/07 的发现与推荐一起设计；现在不假装它有新行为 |
+| 空间成员列表未分页 | 受 `max-members = 50` 约束，规模有上界 | 上限被调高到百级时再分页 |
+| 文档列表未分页 | 受上传量约束（当前无配额） | 与 Phase 05 的配额一起处理 |
+| 邀请不代发通知 | 邀请码由邀请人自行转达 | Phase 10 通知域 |
 
 ---
 
@@ -738,3 +866,23 @@ node scripts/bench/query-baseline.mjs --username demo01 --password '<演示口�
 | 2026-09-17 | `v0.1.0` | 初版。Phase 01：工程骨架、统一错误契约、traceId 链路、Flyway、MyBatis、三层测试体系、前端骨架 |
 | 2026-09-17 | `v0.2.0` | Phase 02：新增 §3.2 受保护接口链路与 §3.3 令牌体系与 §3.4 事务边界、§8.2 安全测试组织；包结构补入 `identity` 与 `platform.audit`；取舍表更新认证与限流状态 |
 | 2026-09-17 | `v0.3.0` | Phase 03：新增 §3.6「读公开、写需登录」与 §3.7 前端令牌续期、§5.3 配置块缩进陷阱、§8.3 社区测试组织、§9 演示数据与基线测量；包结构补入 `community` 与 `bootstrap`；§2.4 补入懒加载产物体积；§4.1 补入社区错误码；§7 补入 V3 表设计与索引取舍；取舍表补入渲染落库、两层评论、计数内联、深分页等项 |
+| 2026-09-18 | `v0.4.0` | Phase 04：新增 §3.8 私有资源的三层防线、§8.4 空间与资源鉴权测试组织；包结构补入 `workspace` 与 `common.rendering`，`PageResponse` 从 `community.api` 迁至 `common.web`；§7 补入 V5 表设计与六处刻意偏离；§4.1 补入 `40021`~`40023` / `41300` / `50300`；取舍表补入本地存储、空间转让、`TEAM` 语义等项；同版本包含 Phase 01–03 质量修复 |
+
+
+## 12. Phase 01–03 质量修复（2026-09-18）
+
+- 刷新轮换使用已有 `revoked_at IS NULL` 条件更新的影响行数作为唯一签发资格；
+  竞争失败返回现有 40102，不新增后继。JWT 验证显式要求 exp。
+- 前端刷新保留暂时失败语义；Web Locks 串行协调同源标签页，锁内重读凭据。
+  会话修订号阻止登出或切换账号后迟到的刷新覆盖状态；不支持 Web Locks 时只提供同页去重。
+- 限流 Map 的准入和计数在短临界区完成，每个窗口记录自己的到期时间。
+  一万条未过期键占满后，新来源返回 429，现有窗口继续按原配额判定；仍为单实例实现。
+- 评论按 publicId 查询时关联同模块的 post 并过滤软删除；分页 OFFSET 使用 long，
+  信息流的 offset 与 limit 使用同一个实际页大小。
+- ArchUnit 增加跨模块持久层隔离及 domain 不得依赖 app/api/infrastructure/config 的规则。
+  这些规则检测 Java 依赖，不替代对 Mapper SQL 的人工评审。
+- 首页 `/` 重定向 `/community`；诊断页位于 `/system`。
+- 在 `frontend` 执行 `npm test`，使用已有 Vite 编译真实 TS 模块，再交给 Node 自带测试运行器；
+  不引入测试框架依赖。它覆盖认证状态和 HTTP 重试，不替代浏览器组件测试。
+
+详见 `docs/reports/phase-01-03-quality-review.md`。本轮不新增迁移、基础设施或 Phase 04 能力。

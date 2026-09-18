@@ -37,6 +37,16 @@ app:
       # 写死在测试里是刻意的：测试必须可重复、无外部依赖，且它保护的是一分钟就销毁的容器库。
       # 长度 ≥ 32 字节是 HS256 的硬要求（256 bit）。
       secret: test-only-jwt-secret-for-camphub-integration-tests-0123456789
+  workspace:
+    documents:
+      # 测试期的文档字节写到系统临时目录，**不落在仓库里**。
+      # 理由有两条：
+      #   1) 上传测试会真的写文件，写在 ./data 下会让工作区多出一批未被忽略的产物；
+      #   2) 存储目录由配置决定，因此把它指到别处本身就是对
+      #      "storage-dir 这项配置真的生效"的一次验证。
+      # 用 ${java.io.tmpdir} 而不是硬编码 /tmp：占位符从 Environment 解析，
+      # 因此它在 macOS 与 Linux 上都指向该平台的临时目录（Windows 可移植性预留）。
+      storage-dir: ${java.io.tmpdir}/camphub-test-documents
 
 logging:
   level:

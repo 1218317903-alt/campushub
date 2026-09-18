@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- workspace_member 表访问。方法上的 @ScopedTable / @Unscoped 见 WorkspaceMemberMapper.java。 -->
+<mapper namespace="ai.camphub.workspace.infrastructure.WorkspaceMemberMapper">
+
+    <!-- 枚举列只写 javaType，不指名 typeHandler：
+         指名 org.apache.ibatis.type.EnumTypeHandler 会命中 MyBatis 内部
+         "以 handler 类为键"的缓存，可能拿到为别的枚举创建的实例。
+         完整说明见 WorkspaceMapper.xml 的 WorkspaceMap。 -->
+    <resultMap id="MemberMap" type="ai.camphub.workspace.domain.WorkspaceMember">
+        <constructor>
+            <idArg column="user_id" javaType="_long"/>
+            <arg column="role" javaType="ai.camphub.workspace.domain.WorkspaceMemberRole"/>
+            <arg column="joined_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <!-- 与 MemberMap 同表不同方向：这里第一列是 workspace_id 而不是 user_id。
+         不共用同一个 resultMap，是因为构造器映射按位置绑定参数 ——
+         两个 record 的字段顺序不同，共用一个映射会把角色与主键对调，
+         而那不会报错，只会让每个空间的角色都错位。 -->
+    <resultMap id="MembershipRoleMap" type="ai.camphub.workspace.domain.MembershipRole">
+        <constructor>
+            <idArg column="workspace_id" javaType="_long"/>
+            <arg column="role" javaType="ai.camphub.workspace.domain.WorkspaceMemberRole"/>
+        </constructor>
+    </resultMap>
+
+    <!-- 主键是 (workspace_id, user_id) 复合键，重复插入由数据库挡下。
+         不在这里做"先查再插"：那在并发下必然出现两条成员行。 -->
+    <insert id="insert">
+        INSERT INTO workspace_member (workspace_id, user_id, role)
+        VALUES (#{workspaceId},
+                #{userId},
+                #{role})
+    </insert>
+
+    <!-- 无空间过滤：这是"这个人是不是这个空间的成员"的答案本身。
+         拥有者不在本表中，因此这里返回空不代表没有权限 ——
+         拥有者身份由 workspace.owner_id 回答，AuthorizationService 先判拥有者。 -->
+    <select id="findRole" resultType="ai.camphub.workspace.domain.WorkspaceMemberRole">
+        SELECT role
+        FROM workspace_member
+        WHERE workspace_id = #{workspaceId}
+        AND user_id = #{userId}
+    </select>
+
+    <!-- 授权集合的另一半输入。JOIN 回 workspace 排除已软删除的空间：
+         否则被删掉的空间会永远留在授权集合里，让 IN (...) 列表无谓地变长。 -->
+    <select id="findMemberWorkspaceIds" resultType="java.lang.Long">
+        SELECT m.workspace_id
+        FROM workspace_member m
+        JOIN workspace w ON w.id = m.workspace_id AND w.deleted_at IS NULL
+        WHERE m.user_id = #{userId}
+    </select>
+
+    <!-- 一次查出"我参与了哪些空间、分别是什么角色"。
+         列表页要用的就是这个方向的信息，逐条查会退化成页面级 N+1。 -->
+    <select id="findRolesOf" resultMap="MembershipRoleMap">
+        SELECT workspace_id, role
+        FROM workspace_member
+        WHERE user_id = #{userId}
+    </select>
+
+    <!-- 容量判断，不受空间过滤。理由写在接口方法上：
+         兑换邀请码者此刻还不是成员，用授权集合限定会让计数恒为 0、上限静默失效。
+         数行而不是读回整批成员：这个计数在兑换路径上跑，而它只需要一个数字。 -->
+    <select id="countMembers" resultType="long">
+        SELECT COUNT(*)
+        FROM workspace_member
+        WHERE workspace_id = #{workspaceId}
+    </select>
+
+    <!-- 按加入时间排序，时间相同时用 user_id 兜底：
+         同一批邀请可能落在同一个毫秒上，没有兜底列时分页会漏行或重复行
+         （这个教训在 Phase 01-03 的复查里已经吃过一次）。 -->
+    <select id="findMembers" resultMap="MemberMap">
+        SELECT user_id, role, joined_at
+        FROM workspace_member
+        WHERE workspace_id = #{workspaceId}
+        ORDER BY joined_at ASC, user_id ASC
+    </select>
+
+    <delete id="delete">
+        DELETE FROM workspace_member
+        WHERE workspace_id = #{workspaceId}
+        AND user_id = #{userId}
+    </delete>
+
+    <update id="updateRole">
+        UPDATE workspace_member
+        SET role = #{role}
+        WHERE workspace_id = #{workspaceId}
+        AND user_id = #{userId}
+    </update>
+
+</mapper>

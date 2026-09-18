@@ -31,9 +31,9 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { name: 'home', label: '概览', to: '/' },
   { name: 'community', label: '校园社区', to: '/community' },
   { name: 'my-favorites', label: '我的收藏', to: '/community/favorites' },
+  { name: 'system-status', label: '运行状态', to: '/system' },
 ]
 
 /**

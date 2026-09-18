@@ -6,7 +6,7 @@ import ai.camphub.common.random.RandomValues;
 import ai.camphub.common.web.Page;
 import ai.camphub.community.config.CommunityProperties;
 import ai.camphub.community.domain.Category;
-import ai.camphub.community.domain.MarkdownRenderer;
+import ai.camphub.common.rendering.MarkdownRenderer;
 import ai.camphub.community.domain.PostDetail;
 import ai.camphub.community.domain.PostDraft;
 import ai.camphub.community.domain.PostSummary;
@@ -254,7 +254,7 @@ public class PostService {
     public Page<PostCardView> list(FeedQuery query, Long currentUserId) {
         int size = effectivePageSize(query.size());
         List<PostSummary> posts = postMapper.findSummaries(
-                query.categorySlug(), query.tagSlug(), query.sort(), size, query.offset());
+                query.categorySlug(), query.tagSlug(), query.sort(), size, query.offset(size));
         int total = postMapper.countByFilter(query.categorySlug(), query.tagSlug());
 
         return Page.of(assembleCards(posts, currentUserId), query.page(), size, total);
@@ -272,7 +272,7 @@ public class PostService {
     public Page<PostCardView> listFavorites(long userId, int page, int size) {
         int effectiveSize = effectivePageSize(size);
         int effectivePage = Math.max(page, 1);
-        int offset = (effectivePage - 1) * effectiveSize;
+        long offset = (long) (effectivePage - 1) * effectiveSize;
 
         List<PostSummary> posts = postMapper.findFavoriteSummaries(userId, effectiveSize, offset);
         int total = postMapper.countFavorites(userId);
