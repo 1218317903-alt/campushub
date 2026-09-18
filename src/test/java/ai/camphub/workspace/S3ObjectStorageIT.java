@@ -53,8 +53,9 @@ import tools.jackson.databind.JsonNode;
  * 换来的只是"存储后端这件事在每个测试里都被重复验证了一遍"。
  *
  * <h2>镜像与桶</h2>
- * 镜像默认取本机已有的 {@code minio/minio:latest}（本机 Docker Hub 直连不可达，
- * 见 docs/11-开发环境.md），可用 {@code -Dtestcontainers.minio.image=...} 覆盖。
+ * 镜像在 {@link #MINIO_IMAGE} 里固定为 quay.io 上的一个 release（不是 Docker Hub 的
+ * {@code minio/minio}，后者已下架），可用 {@code -Dtestcontainers.minio.image=...} 覆盖；
+ * 理由与踩过的坑写在那个字段的注释里。
  * 桶必须显式创建：MinIO 不会替你建，而"桶不存在"的表现是上传时的 404 NoSuchBucket。
  */
 @DisplayName("对象存储后端 · 真实 MinIO")
@@ -69,9 +70,23 @@ class S3ObjectStorageIT extends WorkspaceTestSupport {
     /** 见 {@link #ACCESS_KEY}。 */
     private static final String SECRET_KEY = "camphub-test-secret-key-please-ignore";
 
-    /** 仓库外可用 -Dtestcontainers.minio.image 覆盖，理由与 MySQL 镜像一致。 */
+    /**
+     * 镜像默认取 quay.io 上的固定 release，理由与 MySQL 镜像一致（可复现 + 显式）。
+     *
+     * <h2>为什么不是 {@code minio/minio}</h2>
+     * MinIO 已经把社区镜像从 Docker Hub 迁到 quay.io，{@code minio/minio} 在 Docker Hub 上
+     * 现在返回 404（2026-09-18 实测：{@code /v2/repositories/minio/minio/} → "object not found"）。
+     * 用旧引用在本机可能"看起来能用"—— 只要本机恰好有一份被人工打过同名 tag 的镜像 ——
+     * 而在干净的 CI runner 上会直接拉取失败，表现为"后端全量测试"这一步红灯。
+     * 这正是 Phase 05 第一次推送后 CI 失败的原因。
+     *
+     * <h2>为什么钉住 release 而不是 latest</h2>
+     * 与 {@code mysql:8.4} 同一条纪律：镜像里跑的是"验证的对象存储实现"，
+     * 让它随上游 latest 漂移，等于让"这条测试昨天通过"不再说明任何事。
+     * 仓库外仍可用 {@code -Dtestcontainers.minio.image=...} 覆盖来试新版本。
+     */
     private static final String MINIO_IMAGE = System.getProperty(
-            "testcontainers.minio.image", "minio/minio:latest");
+            "testcontainers.minio.image", "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z");
 
     /** 预签名直链用独立客户端取：它模拟的是"陌生人拿着地址"，不带任何应用凭据。 */
     private static final HttpClient PLAIN_CLIENT = HttpClient.newBuilder()
