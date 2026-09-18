@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -223,6 +224,26 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleNoResource(NoResourceFoundException ex, HttpServletRequest request) {
         log.warn("路径未命中 path={}", request.getRequestURI());
         return build(ErrorCode.NOT_FOUND, ErrorCode.NOT_FOUND.defaultMessage(), request);
+    }
+
+    /**
+     * 分片上传超出容器上限。
+     *
+     * <p>这个异常在<b>进入控制器之前</b>就由容器抛出，因此它不可能被任何服务层的校验拦住。
+     * 没有这一支时它会落到"未预期异常"，变成 50000 ——
+     * 而调用方看到 5xx 的第一反应是重试，于是同一个超大文件会被反复上传，
+     * 每一次都在容器层被拒。把它翻成 413，让"这次请求本身不可能成功"这件事表达清楚。
+     *
+     * @param ex      超限异常
+     * @param request 当前请求
+     * @return 统一错误响应
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiError> handleMaxUploadSize(MaxUploadSizeExceededException ex,
+                                                       HttpServletRequest request) {
+        log.warn("上传内容超出容器上限 path={} 上限={}",
+                request.getRequestURI(), ex.getMaxUploadSize());
+        return build(ErrorCode.PAYLOAD_TOO_LARGE, ErrorCode.PAYLOAD_TOO_LARGE.defaultMessage(), request);
     }
 
     /**

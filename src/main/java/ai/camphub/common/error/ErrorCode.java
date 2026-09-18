@@ -24,6 +24,7 @@ import org.springframework.http.HttpStatus;
  *   <tr><td>40050 ~ 40059</td><td>ai 模块（Phase 08 起）</td></tr>
  *   <tr><td>40100 ~ 40199</td><td>认证失败（未登录 / 令牌问题 / 凭据错误）</td></tr>
  *   <tr><td>40300 ~ 40399</td><td>已认证但被拒绝（权限不足 / 账号不可用）</td></tr>
+ *   <tr><td>41300 ~ 41399</td><td>请求体过大（分片上传超出容器上限）</td></tr>
  *   <tr><td>42900 ~ 42999</td><td>限流</td></tr>
  * </table>
  * 新增错误码时先在本文档登记，再使用。
@@ -56,6 +57,40 @@ public enum ErrorCode {
     INVALID_POST_CONTENT(40031, HttpStatus.BAD_REQUEST, "帖子内容不符合要求"),
     /** community 模块：标签名无法规范化为有效标识（例如整串都是标点符号）。 */
     INVALID_TAG(40032, HttpStatus.BAD_REQUEST, "标签名不合法"),
+
+    // ---------- 400（workspace 模块，Phase 04 起） ----------
+    /**
+     * workspace 模块：邀请码不存在、不是发给本人的、已过期或已撤销。
+     *
+     * <p>文案刻意不区分这四种情况。区分它们等于把邀请码变成可试探的对象：
+     * 攻击者可以据此判断"某个码存在但过期了"，从而缩小猜测范围。
+     *
+     * <p>但"不是发给本人的码"连本码都不会返回 —— 那一支走 {@link #NOT_FOUND}，
+     * 因为它连"这条邀请存在"都不该被确认。
+     */
+    INVITE_CODE_INVALID(40020, HttpStatus.BAD_REQUEST, "邀请无效或已过期"),
+    /**
+     * workspace 模块：空间成员数已达上限。
+     *
+     * <p>用 400 而不是 429：这是"这次请求本身不可能成功"，不是"稍后再试"。
+     * 限流说的是节奏问题，这个是策略上限。
+     */
+    WORKSPACE_MEMBER_LIMIT(40021, HttpStatus.BAD_REQUEST, "空间成员数已达上限"),
+    /**
+     * workspace 模块：空间内容不符合要求（名称、描述、笔记正文、文件名等）。
+     *
+     * <p>与 {@link #INVALID_POST_CONTENT} 的分工相同：本码管"业务策略"
+     * （上限取自配置、将来会被调整），字段格式约束仍归 {@link #VALIDATION_FAILED}。
+     */
+    INVALID_WORKSPACE_CONTENT(40022, HttpStatus.BAD_REQUEST, "空间内容不符合要求"),
+    /**
+     * workspace 模块：拥有者不能退出自己的空间。
+     *
+     * <p>这不是限制，而是"没有转让就没有退出"这个事实的说明。若允许拥有者退出，
+     * 空间会变成一个没有人能删除、没有人能管理成员、也没有人能改设置的孤儿 ——
+     * 而库里没有任何东西能表达"这个空间无主"。所以正确的路径是先转让，或者直接删除。
+     */
+    WORKSPACE_OWNER_CANNOT_LEAVE(40023, HttpStatus.BAD_REQUEST, "空间拥有者不能退出，请先转让或删除空间"),
 
     // ---------- 401 ----------
     /** 未提供凭据。用于"根本没带令牌"的情况。 */
@@ -109,6 +144,22 @@ public enum ErrorCode {
     // ---------- 409 ----------
     /** 唯一性冲突（用户名、邮箱等已被占用）。 */
     CONFLICT(40900, HttpStatus.CONFLICT, "数据已存在"),
+
+    // ---------- 413 ----------
+    /**
+     * 请求体过大。
+     *
+     * <h2>为什么它必须存在，而不是让 {@code MaxUploadSizeExceededException} 落到兜底分支</h2>
+     * 分片上传超过 {@code spring.servlet.multipart.max-file-size} 时，
+     * 异常在<b>进入控制器之前</b>就由容器抛出。若不专门处理它，
+     * 它会落到"未预期异常"那一支，变成 {@code 50000 服务器内部错误} ——
+     * 而调用方看到 5xx 时的第一反应是重试，于是同一个超大文件被反复上传。
+     *
+     * <p>它与 {@code app.workspace.documents.max-size-bytes} 是两个不同的闸门：
+     * 这一层是容器的硬上限（在解析请求体时就拦下），应用配置的那一层更小，
+     * 让"文件太大"由业务自己判断并返回统一错误信封。
+     */
+    PAYLOAD_TOO_LARGE(41300, HttpStatus.PAYLOAD_TOO_LARGE, "请求内容过大"),
 
     // ---------- 429 ----------
     /**

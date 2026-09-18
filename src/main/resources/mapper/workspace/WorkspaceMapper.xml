@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- workspace 表访问。方法上的 @ScopedTable / @Unscoped 见 WorkspaceMapper.java，
+     它们决定 WorkspaceScopeInterceptor 是否给下面的语句追加空间过滤。 -->
+<mapper namespace="ai.camphub.workspace.infrastructure.WorkspaceMapper">
+
+    <!-- javaType 用 _long / _int（原始类型别名），见 CategoryMapper.xml 的说明。
+
+         ⚠️ 枚举列只写 javaType，**不要**写 typeHandler="...EnumTypeHandler"（踩过一次）：
+         MyBatis 的 TypeHandlerRegistry 除按 javaType 建的那张表外，还有一张
+         **以 handler 类为键**的表（ALL_TYPE_HANDLERS_MAP）。显式指名通用处理器时，
+         MyBatis 会先按 handler 类去查那张表并直接命中，拿到的可能是**为另一个枚举**
+         创建的实例 —— 谁是上一个被解析的枚举，取决于 mapper 的加载顺序。
+         表现是 "No enum constant <别的枚举>.PRIVATE"，只在真正查询时炸，编译期毫无提示。
+
+         只写 javaType 时，MyBatis 会为这个枚举单独实例化一个处理器并登记在
+         TYPE_HANDLER_MAP[枚举类] 下，行为只由这一列的类型决定。
+         全局默认处理器若被改成按序号存储，这里是显式列名与枚举名的字面对应，
+         仍然按名字读写 —— 这正是数据契约要求的行为。 -->
+    <resultMap id="WorkspaceMap" type="ai.camphub.workspace.domain.Workspace">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="public_id" javaType="java.lang.String"/>
+            <arg column="name" javaType="java.lang.String"/>
+            <arg column="description" javaType="java.lang.String"/>
+            <arg column="visibility" javaType="ai.camphub.workspace.domain.WorkspaceVisibility"/>
+            <arg column="owner_id" javaType="_long"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+            <arg column="updated_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="workspaceColumns">
+        w.id, w.public_id, w.name, w.description, w.visibility, w.owner_id,
+        w.created_at, w.updated_at
+    </sql>
+
+    <!-- 不返回自增主键：useGeneratedKeys 需要把主键写回一个可变对象，
+         而实体是不可变 record。插入后按 public_id 再查一次即可（唯一索引命中）。
+
+         枚举参数同样不指名 typeHandler：运行时按实参的类解析处理器。
+         visibility 是不可空列，null 在这里说明上游校验漏了，报错比静默写入好。 -->
+    <insert id="insert">
+        INSERT INTO workspace (public_id, name, description, visibility, owner_id)
+        VALUES (#{workspace.publicId},
+                #{workspace.name},
+                #{workspace.description},
+                #{workspace.visibility},
+                #{workspace.ownerId})
+    </insert>
+
+    <!-- 无空间过滤。理由写在接口方法的 @Unscoped 上：它是鉴权的输入。
+         若在这里就按"已加入的空间"过滤，"空间不存在"与"没有权限"会合并成同一个空值，
+         于是 404 与 403 无法区分。 -->
+    <select id="findByPublicId" resultMap="WorkspaceMap">
+        SELECT
+        <include refid="workspaceColumns"/>
+        FROM workspace w
+        WHERE w.public_id = #{publicId}
+        AND w.deleted_at IS NULL
+    </select>
+
+    <select id="findById" resultMap="WorkspaceMap">
+        SELECT
+        <include refid="workspaceColumns"/>
+        FROM workspace w
+        WHERE w.id = #{id}
+        AND w.deleted_at IS NULL
+    </select>
+
+    <!-- 授权集合的一半输入。刻意不做空间过滤：这个集合要靠它算出来。 -->
+    <select id="findOwnedIds" resultType="java.lang.Long">
+        SELECT w.id
+        FROM workspace w
+        WHERE w.owner_id = #{userId}
+        AND w.deleted_at IS NULL
+    </select>
+
+    <!-- "我的空间"列表：自己拥有的 + 被邀请加入的。
+         用 EXISTS 而不是 JOIN + DISTINCT：EXISTS 在命中第一行即可短路，
+         而且不需要对结果去重 —— 一个用户在同一个空间里只可能有一条成员行，
+         但 join 写法会把"去重"这件事变成必须记得做的事。
+
+         以 (created_at, id) 排序并分页：同一毫秒创建的两个空间若只按时间排序，
+         分页会漏行或重复行。 -->
+    <select id="findVisibleTo" resultMap="WorkspaceMap">
+        SELECT
+        <include refid="workspaceColumns"/>
+        FROM workspace w
+        WHERE w.deleted_at IS NULL
+        AND (w.owner_id = #{userId}
+        OR EXISTS (SELECT 1 FROM workspace_member m
+        WHERE m.workspace_id = w.id AND m.user_id = #{userId}))
+        ORDER BY w.created_at DESC, w.id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 与上面那条共用同一套筛选条件。两处条件必须一致，
+         否则分页总页数与实际行数不符 —— 表现是最后一页重复或缺失内容，
+         而这类错不会有人来报。 -->
+    <select id="countVisibleTo" resultType="long">
+        SELECT COUNT(*)
+        FROM workspace w
+        WHERE w.deleted_at IS NULL
+        AND (w.owner_id = #{userId}
+        OR EXISTS (SELECT 1 FROM workspace_member m
+        WHERE m.workspace_id = w.id AND m.user_id = #{userId}))
+    </select>
+
+    <update id="updateSettings">
+        UPDATE workspace
+        SET name = #{name},
+        description = #{description},
+        visibility = #{visibility}
+        WHERE id = #{id}
+        AND deleted_at IS NULL
+    </update>
+
+    <!-- 软删除：成员行、文档与审计仍需引用这个空间。
+         deleted_at 由应用层传时间而不是用 CURRENT_TIMESTAMP：
+         "什么时候删的"必须与审计日志里的时间来自同一个时钟。 -->
+    <update id="softDelete">
+        UPDATE workspace
+        SET deleted_at = #{now}
+        WHERE id = #{id}
+        AND deleted_at IS NULL
+    </update>
+
+</mapper>

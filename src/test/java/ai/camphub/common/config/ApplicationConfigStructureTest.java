@@ -74,6 +74,24 @@ class ApplicationConfigStructureTest {
             "app.community.feed.default-page-size",
             "app.community.feed.max-page-size",
 
+            // app.workspace（WorkspaceProperties）
+            "app.workspace.limits.max-name-length",
+            "app.workspace.limits.max-description-length",
+            "app.workspace.members.max-members",
+            "app.workspace.members.invite-valid-hours",
+            "app.workspace.notes.max-title-length",
+            "app.workspace.notes.max-body-length",
+            "app.workspace.notes.summary-length",
+            "app.workspace.documents.max-size-bytes",
+            "app.workspace.documents.storage-dir",
+            // 列表项在 YAML 属性源里是按下标展开的：[0] 才是那个真实存在的键。
+            // 写成不带下标的 "allowed-types" 会永远为 false ——
+            // 那样这个条目就变成了一个必然失败的断言，而它想验证的"白名单配了没"反倒没人看。
+            "app.workspace.documents.allowed-types[0]",
+            "app.workspace.documents.download-inline",
+            "app.workspace.feed.default-page-size",
+            "app.workspace.feed.max-page-size",
+
             // app.demo-seed（DemoSeedProperties）
             "app.demo-seed.enabled",
             "app.demo-seed.author-count",
