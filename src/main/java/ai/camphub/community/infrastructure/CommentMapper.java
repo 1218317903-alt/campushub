@@ -49,7 +49,7 @@ public interface CommentMapper {
      */
     List<Comment> listTopLevel(@Param("postId") long postId,
                               @Param("limit") int limit,
-                              @Param("offset") int offset);
+                              @Param("offset") long offset);
 
     /**
      * 统计顶层评论数。
@@ -80,7 +80,7 @@ public interface CommentMapper {
      */
     List<Comment> listReplies(@Param("parentId") long parentId,
                              @Param("limit") int limit,
-                             @Param("offset") int offset);
+                             @Param("offset") long offset);
 
     /**
      * 统计某条顶层评论的回复数。

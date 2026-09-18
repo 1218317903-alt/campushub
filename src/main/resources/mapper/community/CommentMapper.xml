@@ -39,6 +39,7 @@
     <select id="findByPublicId" resultMap="CommentMap">
         SELECT <include refid="commentColumns"/>
         FROM comment c
+        JOIN post p ON p.id = c.post_id AND p.deleted_at IS NULL
         WHERE c.public_id = #{publicId}
           AND c.deleted_at IS NULL
     </select>
@@ -51,7 +52,7 @@
         WHERE c.post_id = #{postId}
           AND c.parent_id IS NULL
           AND c.deleted_at IS NULL
-        ORDER BY c.created_at DESC
+        ORDER BY c.created_at DESC, c.id DESC
         LIMIT #{limit} OFFSET #{offset}
     </select>
 
@@ -84,7 +85,7 @@
         FROM comment c
         WHERE c.parent_id = #{parentId}
           AND c.deleted_at IS NULL
-        ORDER BY c.created_at
+        ORDER BY c.created_at, c.id
         LIMIT #{limit} OFFSET #{offset}
     </select>
 

@@ -59,10 +59,11 @@ public record FeedQuery(
     /**
      * 计算 SQL 的 OFFSET。
      *
+     * @param effectiveSize 服务层截断后的实际页大小
      * @return 偏移量
      */
-    public int offset() {
-        return (page - 1) * size;
+    public long offset(int effectiveSize) {
+        return (long) (page - 1) * effectiveSize;
     }
 
     /**

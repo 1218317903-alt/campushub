@@ -87,7 +87,7 @@ public class CommentService {
         PostDetail post = requirePost(postPublicId);
         int effectiveSize = effectivePageSize(size);
         int effectivePage = Math.max(page, 1);
-        int offset = (effectivePage - 1) * effectiveSize;
+        long offset = (long) (effectivePage - 1) * effectiveSize;
 
         List<Comment> comments = commentMapper.listTopLevel(post.id(), effectiveSize, offset);
         int total = commentMapper.countTopLevel(post.id());
@@ -110,7 +110,7 @@ public class CommentService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         int effectiveSize = effectivePageSize(size);
         int effectivePage = Math.max(page, 1);
-        int offset = (effectivePage - 1) * effectiveSize;
+        long offset = (long) (effectivePage - 1) * effectiveSize;
 
         List<Comment> replies = commentMapper.listReplies(parent.id(), effectiveSize, offset);
         int total = commentMapper.countReplies(parent.id());
