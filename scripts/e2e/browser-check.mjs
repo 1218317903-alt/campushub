@@ -33,7 +33,7 @@
  * 用法
  * ============================================================================
  *   node scripts/e2e/browser-check.mjs
- *   node scripts/e2e/browser-check.mjs --base-url http://127.0.0.1:5173
+ *   node scripts/e2e/browser-check.mjs --base-url http://localhost:5173
  *   node scripts/e2e/browser-check.mjs --headful          # 想看着它跑
  *   node scripts/e2e/browser-check.mjs --password '...'   # 演示口令非默认值时
  *
@@ -71,7 +71,11 @@ function arg(name, fallback) {
   return value
 }
 
-const BASE_URL = arg('--base-url', 'http://127.0.0.1:5173')
+// 默认用 localhost 而不是 127.0.0.1：Vite 默认监听 `localhost`，
+// 在这台机器上它解析到 ::1（IPv6），因此 127.0.0.1:5173 是**连不上**的 ——
+// 那会表现为「脚本第一步就失败」，而原因看起来像是页面有问题。
+// localhost 与 Vite 自己打印的那个地址一致，因此是更稳的默认值。
+const BASE_URL = arg('--base-url', 'http://localhost:5173')
 const CHROME = arg('--chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
 const PASSWORD = arg('--password', 'CampusHub-Demo-2026')
 const HEADFUL = args.includes('--headful')
