@@ -1,6 +1,8 @@
-# resource-authorization.md · 资源级授权（Phase 04）
+# resource-authorization.md · 资源级授权（Phase 04 建立，Phase 05 续写）
 
-> **效力**：本文件是 Phase 04 的交付物，定义"私有数据谁能看到、谁能改"的完整规则。
+> **效力**：本文件定义"私有数据谁能看到、谁能改"的完整规则。
+> Phase 04 建立了空间内三类资源（空间/成员与邀请/笔记）的规则与三层防线；
+> Phase 05 在其上续写文档流水线相关的能力点（`document:retry`）与接口（§3.2、§8）。
 > **事实来源**：权限矩阵的代码来源是 `WorkspaceAction`（`ai.camphub.workspace.domain`），
 > 它会被 `WorkspaceActionTest` 逐格断言。文档与代码不一致时以代码为准 —— 因为代码会跑测试。
 > **上位文档**：`docs/03-domain-permission.md` §10（模型与三层防线的原始设计）、
@@ -128,7 +130,19 @@ Phase 04 引入了第三类：**属于一个小组的私有数据**。空间、�
 | 读文档元数据与列表 | ✅ | ✅ | ✅ | — | `document:read` |
 | 上传文档 | ✅ | ✅ | ✅ | — | `document:upload` |
 | 下载文档原文件 | ✅ | ✅ | ✅ | — | `document:download` |
+| 查看解析结果（分块） | ✅ | ✅ | ✅ | — | `document:read` |
+| **重新解析**文档 | ✅ | ✅ | 仅自己上传的 | 区分 | `document:retry` |
 | **删除**文档 | ✅ | ✅ | 仅自己上传的 | 区分 | `document:delete` |
+
+**"重新解析"为什么也要看归属，而"上传"不看。** 上传只是往空间里加一份新东西，
+代价与影响都局限在提交者自己身上。重新解析会**替换这份文档现有的可检索内容**
+（旧分块先删后写），对一份别人上传、且已解析成功的文档反复触发重解析，
+既能反复占用解析资源，也能让那份内容在一段时间里不可检索。
+因此 `RETRY_DOCUMENT_PARSE` 与两个删除动作一起被 `isOwnershipSensitive()` 判为区分归属。
+
+**"查看分块"为什么不另开权限点。** 分块是这份文档正文的另一种呈现，
+它不比其他任何一份空间正文更敏感。给它单开权限点只会造出一个
+"能读文档但不能读正文"的没意义中间态 —— 权限点的数量本身就是维护成本。
 
 **"编辑开放、删除收紧"是刻意的，不是疏忽。**
 编辑不会丢失内容：`body_md` 是事实来源，任何一次编辑都是一次可追溯的 `updated_by` 变更，
@@ -149,7 +163,7 @@ Phase 04 引入了第三类：**属于一个小组的私有数据**。空间、�
 
 ### 3.3 身份能力点的来源
 
-16 个权限点全部授予基础角色 `USER`（V5 迁移）：
+17 个权限点全部授予基础角色 `USER`（前 16 个在 V5 迁移，`document:retry` 在 V6 迁移补入）：
 
 ```
 workspace:create · workspace:read · workspace:update · workspace:delete
@@ -157,6 +171,7 @@ workspace:member:invite · workspace:member:remove · workspace:member:role:upda
 workspace:join
 note:create · note:read · note:update · note:delete
 document:upload · document:read · document:delete · document:download
+document:retry
 ```
 
 **"人人都有"不等于"人人都是管理员"。** 这些码回答的是"身份有没有这类能力"，
@@ -437,7 +452,11 @@ WHERE workspace_id = ? AND code = ? AND status = 'PENDING'
 | `GET`/`POST` | `/api/v1/workspaces/{workspacePublicId}/documents` | `document:read` / `document:upload` |
 | `GET` | `/api/v1/workspaces/{workspacePublicId}/documents/{docPublicId}` | `document:read` |
 | `GET` | `/api/v1/workspaces/{workspacePublicId}/documents/{docPublicId}/content` | `document:download` |
+| `POST` | `/api/v1/workspaces/{workspacePublicId}/documents/{docPublicId}/download-link` | `document:download` |
+| `GET` | `/api/v1/workspaces/{workspacePublicId}/documents/{docPublicId}/chunks` | `document:read` |
+| `POST` | `/api/v1/workspaces/{workspacePublicId}/documents/{docPublicId}/parse` | `document:retry` |
 | `DELETE` | `/api/v1/workspaces/{workspacePublicId}/documents/{docPublicId}` | `document:delete` |
+| `GET` | `/api/v1/document-downloads/{token}` | **无**（令牌自带授权，见下） |
 
 **兑换邀请的端点刻意不在 `/workspaces` 下**，因为它**没有空间标识**，也不可能有：
 兑换的人此刻还不是成员，自然不知道（也不该被提前告知）那个空间的 `publicId` ——
@@ -447,6 +466,27 @@ WHERE workspace_id = ? AND code = ? AND status = 'PENDING'
 强制要求一个"兑换者本来就不该有"的参数，会逼着调用方去别处搞到它 ——
 而那个"别处"通常就是邀请消息本身，于是路径里出现一个纯粹为了满足路由形状的字段。
 
+### 8.1 为什么 `/document-downloads/{token}` 没有身份能力点
+
+它上面**没有** `@PreAuthorize`，也**不经过**第 ②③ 层 —— 因为这条请求里根本没有身份：
+它的使用场景是"把这个地址交给浏览器的下载器或另一个客户端"，
+那里没有 `Authorization` 头可带。授权信息全部编码在令牌里：
+
+- 令牌由 `POST .../download-link` 签发，而**签发那一刻**走的是完整的
+  `document:download` + 资源级判定 + 空间范围三层；签不出来就说明他本来也无权下载。
+- 令牌内容带上文档标识与**过期时刻**，服务端用同一把密钥验签；
+  改一个字节、换一份文档、或过期之后再用，一律拒绝。
+- 有效期内它等价于"一次已经通过的授权结论"，而不是"一个绕过授权的后门"：
+  权限被撤销不会让已签发的令牌提前失效，这是**刻意的取舍** ——
+  代价是撤销后仍有一段最长不超过令牌有效期的窗口，收益是下载链接不必每次重签。
+
+因此它不进上面这张表。**把它当成一个"权限点"来管，会诱导出
+"给这个 URL 也加一条 `@PreAuthorize`"的写法 —— 而那条判据在无身份的请求上永远不成立。**
+
+`GET .../content`（带 `Authorization` 头）与 `POST .../download-link`（换一个短期令牌）
+并存，是为了让"这次下载要不要在服务端再过一遍鉴权"由调用方按场景选择，
+而不是让服务端猜。两条路径的响应都强制 `Content-Disposition: attachment`。
+
 ---
 
 ## 9. 与原始设计（docs/03）的偏离
@@ -455,7 +495,7 @@ WHERE workspace_id = ? AND code = ? AND status = 'PENDING'
 
 | # | 原始设计 | 本实现 | 理由 |
 |---|---|---|---|
-| 1 | 11 个权限点 | 16 个 | 补充 `workspace:join`（"加入"与"看"是不同能力，混用会顺带授予）、`note:*` 4 个（笔记是空间内一等资源，不能复用 `workspace:update`）、`document:*` 的拆分为 upload/read/download/delete |
+| 1 | 11 个权限点 | 17 个 | 补充 `workspace:join`（"加入"与"看"是不同能力，混用会顺带授予）、`note:*` 4 个（笔记是空间内一等资源，不能复用 `workspace:update`）、`document:*` 的拆分为 upload/read/download/delete/retry（Phase 05 补入 `document:retry`，理由见 §3.2） |
 | 2 | 第一层用 `hasPermission` 做资源判定 | 只判身份 | 见 §2.2：失败码冲突 + 规则不应有两处实现 |
 | 3 | 拥有者以 `role='OWNER'` 在成员表 | 只记在 `workspace.owner_id` | 见 §4：避免两份必须同步的真相 |
 | 4 | `workspace_task` / `document_version` 表 | 不建 | 这两个实体所属的能力（任务板、版本树）在本阶段既没有接口也没有状态机。先建表等于先把"我们支持这两件事"写进 schema |

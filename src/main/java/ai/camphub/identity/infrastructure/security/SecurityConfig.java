@@ -138,6 +138,23 @@ public class SecurityConfig {
                                 "/api/v1/community/comments/*/replies").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+                        // 短期下载链接的兑换端点。它是本项目唯一一个**故意**不做身份鉴权的业务接口：
+                        // 令牌由已经通过三层防线的路径签发，本身即凭据（详见
+                        // DownloadTokenService / TokenDownloadService 的类注释）。
+                        //
+                        // 这里用单段通配 * 而不是 /**：令牌恰好是一段路径，
+                        // 放行更深层的前缀只会让将来某个误挂在同一前缀下的新接口
+                        // 顺带变成匿名可访问 —— 那种错误不会有任何编译期提示。
+                        //
+                        // 它不需要在这里额外做限流：令牌是签过名的，攻击者既造不出
+                        // 有效令牌，也无法通过枚举把它猜出来，因此这一层的
+                        // "请求频率"没有可利用的语义。
+                        //
+                        // 令牌会出现在 URL 路径里，因此 Referer 是一个泄漏面。
+                        // 下面 headers 里的 STRICT_ORIGIN_WHEN_CROSS_ORIGIN 已经把
+                        // 跨站请求的 Referer 截成"只有源、不带路径"，
+                        // 这正是不必为这条接口单独关掉 Referer 的原因。
+                        .requestMatchers(HttpMethod.GET, "/api/v1/document-downloads/*").permitAll()
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exception -> exception

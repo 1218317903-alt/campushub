@@ -1,6 +1,10 @@
 package ai.camphub.workspace;
 
 import ai.camphub.support.AbstractIntegrationTest;
+import ai.camphub.workspace.app.DocumentTaskProcessor;
+import ai.camphub.workspace.app.DocumentTaskRunner;
+import ai.camphub.workspace.config.WorkspaceProperties;
+import ai.camphub.workspace.domain.DocumentTask;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
@@ -8,8 +12,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.springframework.beans.factory.annotation.Autowired;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -273,13 +280,33 @@ abstract class WorkspaceTestSupport extends AbstractIntegrationTest {
      */
     protected HttpResponse<byte[]> downloadDocument(String token, String workspaceId, String docId)
             throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder(
-                        URI.create(url("/api/v1/workspaces/" + workspaceId + "/documents/" + docId + "/content")))
+        return getBytes("/api/v1/workspaces/" + workspaceId + "/documents/" + docId + "/content",
+                token);
+    }
+
+    /**
+     * 发起一次 GET 并保留字节响应。
+     *
+     * <h2>为什么下载类断言需要单独一条路径</h2>
+     * 用字符串处理字节响应会先把内容按某种字符集解码一次 —— 而"下载到了什么字节"
+     * 恰恰是这类测试唯一要验证的东西。让响应在到达断言之前就被解码，
+     * 会让一个截断、乱码或类型错误的实现<strong>照样通过</strong>。
+     *
+     * @param path        路径
+     * @param bearerToken 令牌；为 null 时不带 Authorization 头（短期下载链接的用法）
+     * @return 字节响应
+     * @throws IOException          网络异常
+     * @throws InterruptedException 被中断
+     */
+    protected HttpResponse<byte[]> getBytes(String path, String bearerToken)
+            throws IOException, InterruptedException {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url(path)))
                 .timeout(Duration.ofSeconds(30))
-                .header("Authorization", "Bearer " + token)
-                .GET()
-                .build();
-        return BYTE_CLIENT.send(request, HttpResponse.BodyHandlers.ofByteArray());
+                .GET();
+        if (bearerToken != null) {
+            builder.header("Authorization", "Bearer " + bearerToken);
+        }
+        return BYTE_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
     }
 
     /**
@@ -332,5 +359,159 @@ abstract class WorkspaceTestSupport extends AbstractIntegrationTest {
                 WHERE u.username = ? AND a.action = ?
                 """, Integer.class, username, action);
         return count == null ? 0 : count;
+    }
+
+    // ------------------------------------------------------------------------
+    // 解析流水线
+    // ------------------------------------------------------------------------
+
+    /** 空间模块配置：分块上界、存储根目录等都从这里取，而不是在测试里再写一遍。 */
+    @Autowired
+    protected WorkspaceProperties properties;
+
+    /** 任务队列的事务边界；与生产 worker 用的是同一个 Bean。 */
+    @Autowired
+    protected DocumentTaskRunner taskRunner;
+
+    /** 单任务执行；与生产 worker 用的是同一个 Bean。 */
+    @Autowired
+    protected DocumentTaskProcessor taskProcessor;
+
+    /** 领取任务时的 worker 标识序号，让每次领取看起来来自一个不同的进程。 */
+    private static final AtomicInteger WORKER_SEQ = new AtomicInteger();
+
+    /** 单次领取的批量大小。取一个大于测试可能积压的任务数的值。 */
+    private static final int CLAIM_BATCH = 10;
+
+    /** 排空队列的最大轮数。超出即判定"任务陷入了可无限重试的状态"，直接失败而不是挂死。 */
+    private static final int MAX_DRAIN_ROUNDS = 5;
+
+    /**
+     * 驱动队列直到没有可派发的任务。
+     *
+     * <h2>为什么解析由测试自己驱动，而不是等 worker 跑</h2>
+     * 测试 profile 里 {@code app.workspace.worker.enabled = false}。调度器会在任意时刻
+     * 领走任务，于是"上传之后文档是什么状态"取决于机器快慢与运气 ——
+     * 那类不稳定以"单跑通过、全量偶发失败"的形式出现，排查成本远超这里省下的代码。
+     * 关掉它之后，本方法让"哪一次解析真的发生了"完全由测试决定，而它调用的
+     * {@link DocumentTaskRunner#claim} 与 {@link DocumentTaskProcessor#process}
+     * 与生产 worker 是同一份代码 —— 被跳过的只有 {@code @Scheduled} 这个触发器。
+     *
+     * <h2>为什么要循环到空</h2>
+     * 一次领取只取一批。排空是必要的：否则遗留的任务会被下一个测试的驱动顺手处理掉，
+     * 让"这一轮到底处理了几个"变成一个取决于执行顺序的数字。
+     *
+     * @return 处理掉的任务数
+     */
+    protected int driveQueue() {
+        int processed = 0;
+        for (int round = 0; round < MAX_DRAIN_ROUNDS; round++) {
+            String leaseOwner = "it-worker-" + WORKER_SEQ.incrementAndGet();
+            List<DocumentTask> claimed = taskRunner.claim(CLAIM_BATCH, leaseOwner);
+            if (claimed.isEmpty()) {
+                return processed;
+            }
+            claimed.forEach(taskProcessor::process);
+            processed += claimed.size();
+        }
+        throw new AssertionError("队列在 " + MAX_DRAIN_ROUNDS + " 轮内没有被排空，"
+                + "说明有任务陷入了可以无限重试的状态");
+    }
+
+    /**
+     * 取一份文档的解析任务行。
+     *
+     * <h2>为什么要从库里读</h2>
+     * 任务不对外暴露 —— 用户看到的是文档的 {@code parse_status}，那是任务在文档上的投影。
+     * 而"退避到什么时候、试了几次、上次为什么失败"是任务自己的属性，
+     * 只有直接读行才能断言。这里让数据库拼出 JSON，避免在测试里再定义一遍字段顺序
+     * （那是一份会与 {@code DocumentTask} 的规范构造器各自漂移的定义）。
+     *
+     * @param docPublicId 文档对外标识
+     * @return 任务行的 JSON
+     */
+    protected JsonNode parseTaskOf(String docPublicId) {
+        String row = jdbcTemplate.queryForObject("""
+                SELECT JSON_OBJECT(
+                           'status', t.status,
+                           'attempt_count', t.attempt_count,
+                           'max_attempts', t.max_attempts,
+                           'next_attempt_at', t.next_attempt_at,
+                           'last_error', t.last_error)
+                FROM document_task t
+                JOIN document d ON d.id = t.document_id
+                WHERE d.public_id = ? AND t.task_type = 'PARSE'
+                """, String.class, docPublicId);
+        if (row == null) {
+            throw new AssertionError("文档 " + docPublicId + " 应当存在一行解析任务");
+        }
+        return jsonMapper.readTree(row);
+    }
+
+    /**
+     * 数一份文档的解析任务行数。
+     *
+     * <p>{@code uk_document_task_document_type} 只允许同一文档的同类任务存在一行，
+     * 而"重复调用重试会不会造出第二条任务"正是这条约束的可观测形式。
+     *
+     * @param docPublicId 文档对外标识
+     * @return 行数
+     */
+    protected int parseTaskRowCount(String docPublicId) {
+        Integer count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM document_task t
+                JOIN document d ON d.id = t.document_id
+                WHERE d.public_id = ? AND t.task_type = 'PARSE'
+                """, Integer.class, docPublicId);
+        return count == null ? 0 : count;
+    }
+
+    /**
+     * 数一份文档在库里有多少个分块。
+     *
+     * @param docPublicId 文档对外标识
+     * @return 行数
+     */
+    protected int chunkRowCount(String docPublicId) {
+        Integer count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM document_chunk c
+                JOIN document d ON d.id = c.document_id
+                WHERE d.public_id = ?
+                """, Integer.class, docPublicId);
+        return count == null ? 0 : count;
+    }
+
+    /**
+     * 取一份文档当前的存储键。
+     *
+     * <p>存储键不对外暴露（响应里刻意不含它），而"字节到底放在哪里"只能从库里读。
+     * 本地后端用它拼磁盘路径，对象存储后端用它去桶里找对象 ——
+     * 两种后端共用同一个键，这个键由存储适配器生成。
+     *
+     * @param docPublicId 文档对外标识
+     * @return 存储键
+     */
+    protected String storageKeyOf(String docPublicId) {
+        String key = jdbcTemplate.queryForObject(
+                "SELECT storage_key FROM document WHERE public_id = ?", String.class, docPublicId);
+        if (key == null || key.isBlank()) {
+            throw new AssertionError("文档 " + docPublicId + " 此刻应当仍有存储键");
+        }
+        return key;
+    }
+
+    /**
+     * 定位一份文档在本地磁盘上的字节。
+     *
+     * <p>路径由配置的存储根目录与库里的存储键拼成，而不是自己猜一个 ——
+     * 键的布局是存储适配器的实现细节，在测试里再写一遍就变成了第二份需要跟着改的定义。
+     *
+     * @param docPublicId 文档对外标识
+     * @return 文件路径
+     */
+    protected Path storedFileOf(String docPublicId) {
+        return Path.of(properties.storage().localDir()).resolve(storageKeyOf(docPublicId));
     }
 }

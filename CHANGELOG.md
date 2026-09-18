@@ -12,6 +12,88 @@
 
 ---
 
+## [0.5.0] - 2026-09-18
+
+Phase 05 — Object Storage & Document Workflow。文档从"能存能下"变成**能被处理**：
+`Upload → 任务队列 → 解析 → 分块 → READY / FAILED`。存储是**一个端口、两种实现**，
+解析是**一张任务表 + 轮询 worker**（不是消息队列 —— 理由与代价见
+[docs/document-pipeline.md](docs/document-pipeline.md)）。本版本同时补齐了空间与文档的前端界面。
+
+### Added
+- **存储双实现**：`ObjectStorage` 端口（`store` / `open` / `delete` / `directGetUrl`）。
+  `LocalFileObjectStorage`（默认，可克隆即跑）与 `S3ObjectStorage`（S3 兼容：MinIO / AWS，
+  走 `S3Presigner` 预签名直链）。切换只改 `app.workspace.storage.backend`。
+- **异步文档流水线**：`document_task` 表（`UNIQUE (document_id, task_type)` 幂等落脚点 ·
+  `lease_owner` / `lease_expires_at` 租约 · `next_attempt_at` 退避）+
+  `DocumentTaskRunner`（`FOR UPDATE SKIP LOCKED` 领取）· `DocumentTaskProcessor`（执行）·
+  `DocumentTaskWorker`（`@Scheduled` 触发）。**与文档行同事务入队**，没有双写。
+- **三种解析器**：纯文本 / Markdown / PDF（PDFBox 3.0.7）。
+  Markdown 按标题层级生成**标题路径**（`空间文档规范 > 支持的格式`），PDF 按页（`第 N 页`），
+  纯文本 `heading` 恒为 `null`（没有层级可提取时不编造一个）。
+- **分块（`document_chunk`）**：不跨越标题合并、按段落装箱到 1200 字符、超长段落按句子结束标点
+  **二级切分**；`ordinal` 自 0 连续，唯一键 `(document_id, ordinal)` 保证不重复。
+- **两条下载路径**：`/content`（带令牌，每次请求重新鉴权）与 `/download-link`
+  （短期链接，默认 300 秒；本地后端签本应用地址，S3 后端给直链）。**每次签发留审计**
+  （`DOCUMENT_DOWNLOAD_LINK`）。
+- **失败分类**：可重试（字节读不到、DB 瞬时失败）按 `30·2^(n-1)` 指数退避重排，封顶 1 小时、
+  上限 3 次；不可重试（无解析器 / 文件损坏 / 页数或文本长度超限 / 解析超时）直接终态并向用户
+  给出原因。**重试次数是给"可能自愈的失败"用的**，因此不可重试的失败跳过剩余次数。
+- **文档与分块的接口**：元数据列表（分页）· 详情 · 分块列表（分页）· 重新解析 · 删除。
+- **前端**：「我的空间」（列表 · 创建 · 用邀请码加入）· 空间详情（文档 / 协作笔记 / 成员 / 邀请，
+  标签页懒加载）· 文档详情（解析状态与进度 · 分块查看 · 重新解析 · 获取下载链接 · 删除）·
+  文档列表在存在未完成文档时**有界轮询**（3 秒一次，最多 40 次，到点停止并提示手动刷新）。
+- **真实浏览器验收**：`scripts/e2e/browser-check.mjs`（`make e2e`），用本机 Chrome 通过 CDP 走
+  16 项断言：登录 → 建空间 → 上传 → 进度 → 已就绪 → 分块标题路径 → 链接取回字节且带
+  `attachment` → 笔记渲染 → 邀请 → **非成员看不到空间与文档** → 兑换加入 → 成员可读分块。
+  零依赖（Node 内置 WebSocket），不下载额外浏览器。
+- **测试**：新增 `DocumentChunkerTest` · `DocumentParserTest`（PDFBox 真生成 PDF）·
+  `DocumentParsingRegistryTest` · `DownloadTokenServiceTest` · `DocumentPipelineIT` ·
+  `DocumentParseAuthorizationIT` · `DocumentDownloadTokenIT` · `S3ObjectStorageIT`（真实 MinIO）。
+  前端测试从 7 例扩展到 13 例（新增空间与文档 API 的契约形状断言）。
+
+### Changed
+- **正文排版样式（`.markdown-body`）从帖子详情组件上移到 `src/styles/main.css`**：
+  空间笔记也要用同一套排版，而写在组件的非 scoped 块里意味着
+  "那段样式只在那个组件被加载过之后才生效"——先访问笔记再访问帖子会看到两种排版。
+- 前端测试运行器支持多入口（每个 `tests/*.test.ts` 单独构建），避免模块级状态在用例文件间泄漏。
+- `Makefile` 新增 `make e2e`。
+
+### Fixed
+- **退避窗口中的人工重试无效**（真实缺陷）：`resetForRetry` 原本只放行
+  `SUCCEEDED` / `FAILED`，于是"刚失败、正在退避窗口里"的任务（`PENDING` + `attempt_count > 0`）
+  在用户点「重新解析」后什么都不发生 —— 接口返回 200、状态是 `PENDING`、界面最长 2 分钟毫无变化。
+  现在放行这一情形（仍排除 `RUNNING`）。判据是**用户主动重试与机器自动重试不是同一件事**。
+- **worker 删除分块被第三层防线静默改写**（真实缺陷）：`DocumentChunkMapper.deleteByDocument`
+  原先标注 `@ScopedTable`，而 worker 没有身份 → 授权集合为空 → SQL 被追加 `1 = 0` →
+  **影响 0 行且不报错**。表现是"删除文档后分块表残留"，接口层完全看不出异常。
+  改为 `@Unscoped("理由")` 显式声明绕过。
+- 下载令牌的验签与超长分块的二级切分（Phase 05 开发期修复，见提交 `b8d6bcb`）。
+
+### Security
+- **下载内容永不内联**：`Content-Type: application/octet-stream` +
+  `Content-Disposition: attachment`（RFC 5987 编码中文名），`download-inline: false`。
+  内联会让用户上传的内容在本站域的源下被浏览器解析渲染 —— 那就是"上传一个 HTML 得到一次 XSS"。
+- **MIME 白名单**（比"可解析类型"更宽：压缩包与 Office 文档能存能下，只是解析会以终态失败收尾），
+  并由构建期断言保证**每个解析器声明的类型都在白名单里**（否则那个解析器是死代码）。
+- **下载令牌**：HMAC 签名（文档标识 + 过期时刻），篡改 / 截断 / 垃圾输入**一律同一个错误码**
+  而不按原因分叉；令牌**不能当身份凭据**（放进 `Authorization` 头会被当成无效访问令牌）；
+  密钥留空时启动即生成随机密钥并告警，生产必须显式配置。
+- **资源保护参数**：页数上限 300 · 文本长度上限 200 万字符 · 解析堆内存 16 MiB（防压缩炸弹）·
+  单次解析超时 120 秒 · 上传 10 MiB（小于容器上限，让"太大"由应用给出统一错误信封）。
+- **新增的私有查询全部显式二选一**（`@ScopedTable` 或 `@Unscoped("理由")`），
+  由 `WorkspaceScopeCoverageTest` 在构建期强制。
+
+### Known Issues
+- **解析吞吐靠单实例轮询**：批 5 / 3 秒 ≈ 1.7 任务/秒，且**轮询间隔就是"入队到开始处理"的延迟下限**
+  （平均约 1.5 秒，最坏 3 秒）。换 MQ 的判据写在文档里，等 Phase 09 的压测数据说话。
+- **无配额、无孤儿对象回收**：上传量没有上限；被外部删掉的对象不会被回收。
+- **S3 后端只在集成测试（真实 MinIO 容器）里跑过**，真实部署形态（凭据来源、桶策略、跨域）未验证。
+- **不支持 OCR**（扫描件 PDF 抽不出文字，会以终态失败收尾）；**无向量嵌入、分块无重叠**（Phase 07）。
+- 本地后端的「直链」仍是应用签名的地址，字节经过应用，不是 CDN 直出。
+- 本阶段**未压测**：解析与队列的性能指标待 Phase 09。
+
+---
+
 ## [0.4.0] - 2026-09-18
 
 Phase 04 — Workspace & Resource Authorization。引入协作空间与**资源级鉴权**：

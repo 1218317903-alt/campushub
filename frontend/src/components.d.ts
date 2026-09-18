@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AAlert: typeof import('@arco-design/web-vue')['Alert']
     AButton: typeof import('@arco-design/web-vue')['Button']
+    ACard: typeof import('@arco-design/web-vue')['Card']
     AConfigProvider: typeof import('@arco-design/web-vue')['ConfigProvider']
     ADescriptions: typeof import('@arco-design/web-vue')['Descriptions']
     ADescriptionsItem: typeof import('@arco-design/web-vue')['DescriptionsItem']
@@ -24,10 +25,13 @@ declare module 'vue' {
     AOption: typeof import('@arco-design/web-vue')['Option']
     APagination: typeof import('@arco-design/web-vue')['Pagination']
     APopconfirm: typeof import('@arco-design/web-vue')['Popconfirm']
+    AProgress: typeof import('@arco-design/web-vue')['Progress']
     AResult: typeof import('@arco-design/web-vue')['Result']
     ASelect: typeof import('@arco-design/web-vue')['Select']
     ASpace: typeof import('@arco-design/web-vue')['Space']
     ASpin: typeof import('@arco-design/web-vue')['Spin']
+    ATabPane: typeof import('@arco-design/web-vue')['TabPane']
+    ATabs: typeof import('@arco-design/web-vue')['Tabs']
     ATag: typeof import('@arco-design/web-vue')['Tag']
     ATextarea: typeof import('@arco-design/web-vue')['Textarea']
     CommentThread: typeof import('./components/CommentThread.vue')['default']
@@ -35,5 +39,7 @@ declare module 'vue' {
     PostCardItem: typeof import('./components/PostCardItem.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    WorkspaceDocumentPanel: typeof import('./components/WorkspaceDocumentPanel.vue')['default']
+    WorkspaceNotePanel: typeof import('./components/WorkspaceNotePanel.vue')['default']
   }
 }

@@ -9,8 +9,8 @@ import { useAuthStore } from '@/stores/auth'
  * 应用外壳（顶栏 + 内容区 + 页脚）。
  *
  * <h2>导航项只列「已经存在」的页面</h2>
- * 提前挂上一排点不动的入口，会让人误判项目进度。因此这里只放首页与社区，
- * Workspace / Discover / AI 各自 Phase 上线时再追加。
+ * 提前挂上一排点不动的入口，会让人误判项目进度。因此这里只放已经上线的模块：
+ * 社区、我的空间与运行状态。Discover / AI 各自 Phase 上线时再追加。
  *
  * <h2>版本号取自后端，不写死在页面上</h2>
  * 顶栏曾经硬编码过一个阶段徽标，结果是社区上线后它还停在上一阶段 ——
@@ -33,6 +33,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { name: 'community', label: '校园社区', to: '/community' },
   { name: 'my-favorites', label: '我的收藏', to: '/community/favorites' },
+  { name: 'spaces', label: '我的空间', to: '/spaces' },
   { name: 'system-status', label: '运行状态', to: '/system' },
 ]
 

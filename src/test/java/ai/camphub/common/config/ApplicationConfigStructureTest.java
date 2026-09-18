@@ -83,12 +83,47 @@ class ApplicationConfigStructureTest {
             "app.workspace.notes.max-body-length",
             "app.workspace.notes.summary-length",
             "app.workspace.documents.max-size-bytes",
-            "app.workspace.documents.storage-dir",
+            "app.workspace.documents.public-base-url",
+            "app.workspace.documents.download-token-ttl-seconds",
+            "app.workspace.documents.download-token-secret",
             // 列表项在 YAML 属性源里是按下标展开的：[0] 才是那个真实存在的键。
             // 写成不带下标的 "allowed-types" 会永远为 false ——
             // 那样这个条目就变成了一个必然失败的断言，而它想验证的"白名单配了没"反倒没人看。
             "app.workspace.documents.allowed-types[0]",
             "app.workspace.documents.download-inline",
+
+            // app.workspace.storage（Phase 05：字节存储后端）
+            // 它与 documents 分开，是因为它回答的是另一个问题：
+            // documents 管"允许上传什么"，storage 管"字节放在哪"。
+            // 两块的键都要逐个点到 —— 整块漏缩进的后果是"能上传、下载 500"，
+            // 那是一个在真实使用里才出现的报错。
+            "app.workspace.storage.backend",
+            "app.workspace.storage.local-dir",
+            "app.workspace.storage.s3.bucket",
+            "app.workspace.storage.s3.endpoint",
+            "app.workspace.storage.s3.region",
+            "app.workspace.storage.s3.access-key",
+            "app.workspace.storage.s3.secret-key",
+            "app.workspace.storage.s3.path-style",
+
+            // app.workspace.parsing（Phase 05：解析与分块）
+            "app.workspace.parsing.chunk-max-chars",
+            "app.workspace.parsing.max-pages",
+            "app.workspace.parsing.max-text-chars",
+            "app.workspace.parsing.memory-bytes",
+
+            // app.workspace.worker（Phase 05：异步任务 worker）
+            // 其中 poll-interval-ms 有额外的重要性：它被 @Scheduled 的占位符直接引用，
+            // 缺失时应用根本起不来 —— 这一项属于"少了会立刻发现"的那一类。
+            // 其余项缺失则是安静的（Worker 对象绑不上，worker 永远认为自己是关的）。
+            "app.workspace.worker.enabled",
+            "app.workspace.worker.batch-size",
+            "app.workspace.worker.poll-interval-ms",
+            "app.workspace.worker.lease-seconds",
+            "app.workspace.worker.max-attempts",
+            "app.workspace.worker.backoff-seconds",
+            "app.workspace.worker.parse-timeout-seconds",
+
             "app.workspace.feed.default-page-size",
             "app.workspace.feed.max-page-size",
 

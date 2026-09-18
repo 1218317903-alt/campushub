@@ -5,11 +5,17 @@ import { useAuthStore } from '@/stores/auth'
 /**
  * 路由表。
  *
- * 当前覆盖 Phase 01 的骨架页面与 Phase 03 的社区。其余业务路由
- * （workspace / discover / ai）在各自 Phase 里按模块追加，**不要**在这里提前占位空路由 ——
+ * 当前覆盖 Phase 01 的骨架页面、Phase 03 的社区与 Phase 04/05 的空间与文档。
+ * 其余业务路由（discover / ai）在各自 Phase 里按模块追加，**不要**在这里提前占位空路由 ——
  * 空路由会让「功能没做」看起来像「功能坏了」。
  *
  * 一律使用动态 import（路由级懒加载）：首屏体积不随业务增长而线性膨胀。
+ *
+ * <h2>为什么空间内的资源都把空间标识放在路径里</h2>
+ * `/spaces/:publicId/documents/:docPublicId` 比 `/documents/:docPublicId` 多一个参数，
+ * 但它与后端的定位方式一致：一件私有资源由「空间 + 标识」成对定位。少一个参数就等于
+ * 让「拿着别的空间的标识去试」重新变成一件可以表达的事，而三层防线里的第二层
+ * 正是靠这种成对定位来给出「不可见即 404」的语义。
  */
 const routes: RouteRecordRaw[] = [
   {
@@ -52,6 +58,24 @@ const routes: RouteRecordRaw[] = [
     name: 'post-edit',
     component: () => import('@/views/community/PostEditorView.vue'),
     meta: { title: '编辑帖子', requiresAuth: true },
+  },
+  {
+    path: '/spaces',
+    name: 'spaces',
+    component: () => import('@/views/workspace/WorkspaceListView.vue'),
+    meta: { title: '我的空间', requiresAuth: true },
+  },
+  {
+    path: '/spaces/:publicId',
+    name: 'workspace-detail',
+    component: () => import('@/views/workspace/WorkspaceDetailView.vue'),
+    meta: { title: '空间', requiresAuth: true },
+  },
+  {
+    path: '/spaces/:publicId/documents/:docPublicId',
+    name: 'document-detail',
+    component: () => import('@/views/workspace/DocumentDetailView.vue'),
+    meta: { title: '文档解析', requiresAuth: true },
   },
   {
     path: '/login',

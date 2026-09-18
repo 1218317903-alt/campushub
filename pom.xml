@@ -47,7 +47,7 @@
        /api/v1/system/info 也由此取数。改动这里即改动全项目对外报出的版本，
        不允许在 yml、前端或代码里再写一份。
        发布态不带 -SNAPSHOT；下一次开发的开发态再改为下一版本的 -SNAPSHOT。 -->
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <packaging>jar</packaging>
 
   <name>CampusHub AI</name>
@@ -64,6 +64,10 @@
     <archunit.version>1.5.0</archunit.version>
     <commonmark.version>0.30.0</commonmark.version>
     <html-sanitizer.version>20260313.1</html-sanitizer.version>
+    <!-- Phase 05：Boot 4.1.1 的 spring-boot-dependencies **不托管**下面两个，
+         版本经 Maven Central 实测后在此显式钉死（详见 00-工程规约.md 3.4）。 -->
+    <pdfbox.version>3.0.7</pdfbox.version>
+    <awssdk.version>2.46.7</awssdk.version>
   </properties>
 
   <dependencies>
@@ -183,6 +187,80 @@
       <groupId>com.googlecode.owasp-java-html-sanitizer</groupId>
       <artifactId>owasp-java-html-sanitizer</artifactId>
       <version>${html-sanitizer.version}</version>
+    </dependency>
+
+    <!-- ========== PDF 解析（Phase 05） ========== -->
+    <!--
+      为什么是 PDFBox 而不是别的：
+        · Apache 2.0，无 AGPL/商业授权牵连（iText 是 AGPL，商用需买授权）。
+        · 只解析、不渲染 —— 本阶段只需要把正文抽成文本，不需要把页面画出来。
+          iText / OpenPDF 的排版能力在这里是零收益的重量。
+        · 传递依赖很小（fontbox + pdfbox-io，都是同一项目），
+          不像某些 PDF 库会拖进一整套 IO/图形栈。
+
+      为什么显式钉版本：Boot 4.1.1 的 spring-boot-dependencies 里没有 pdfbox，
+      不写版本会导致构建失败（而不是悄悄用某个版本）。3.0.7 是 Maven Central 实测的最新。
+
+      为什么用 3.x 而不是还在维护的 2.0.36：
+        3.x 把加载入口从静态方法 PDDocument.load 改成了 Loader.loadPDF，
+        并且可以传 MemoryUsageSetting 限制解析期内存 —— 后者是本项目需要的
+        （PDF 是用户上传的不可信输入，见 docs/document-pipeline.md 的解析安全一节）。
+    -->
+    <dependency>
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>${pdfbox.version}</version>
+    </dependency>
+
+    <!-- ========== S3 兼容对象存储（Phase 05，可选后端） ========== -->
+    <!--
+      为什么用 AWS SDK v2 而不是 MinIO 官方 Java SDK：
+        · io.minio:minio 最后一个发布是 8.5.17（2025-01），此后无更新，已进维护模式；
+          AWS SDK v2 同期仍在按月发布（本版本 2.46.7 为 2026-06）。
+          选一个还在被维护的客户端，不是选一个"更贴近 MinIO"的客户端 —— MinIO 本身
+          就实现了 S3 协议，用 S3 的标准客户端访问它正是它的设计意图。
+        · 因此本项目的 S3 适配器对 MinIO、AWS S3、以及其他 S3 兼容实现是同一份代码，
+          差别只在 endpoint 与 path-style 两个配置项。
+
+      为什么额外引 url-connection-client，并排除另外两个：
+        AWS SDK 的 HTTP 实现是可插拔的，而 s3 构件把可选项全部当依赖带了进来。
+        实测（mvn dependency:tree）：不排除时 runtime 里会同时出现 apache5-client、
+        netty-nio-client 以及它们各自的传递依赖树。真正生效的只有我们显式装配的那一个，
+        其余全是构建产物里永不执行的重量。
+        选 url-connection-client 而不是它们的理由：它只依赖 JDK，不引入任何
+        HTTP 客户端版本，因此不可能与 Boot 管理的 HttpClient / Netty 版本发生冲突；
+        而本项目的对象存储调用是低频、大 body、同步的，用不上连接池调优或多路复用。
+
+      为什么版本必须显式写：同 pdfbox，Boot BOM 不托管 software.amazon.awssdk。
+      注意 SDK 自带的 JSON 支持是重打包的（software.amazon.awssdk.thirdparty.jackson），
+      与项目使用的 Jackson 3（tools.jackson）包名不重叠，不存在版本竞争。
+    -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <version>${awssdk.version}</version>
+      <!--
+        必须显式排除这两个 HTTP 实现（实测：s3 会把它们作为 runtime 依赖带入）。
+        不排除的话，构建产物里会多出一整条 Netty 栈（netty-codec-http / http2 /
+        compression / transport ...）与 Apache HttpClient 5 —— 而本项目一次都
+        不会用它们：真正生效的 HTTP 客户端由下面 url-connection-client 提供。
+        多一份永远不被实例化的 IO 栈，意味着多一份需要跟进安全公告的依赖。
+      -->
+      <exclusions>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>apache5-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>url-connection-client</artifactId>
+      <version>${awssdk.version}</version>
     </dependency>
 
     <!-- ========== API 文档 ========== -->
