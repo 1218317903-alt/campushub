@@ -152,7 +152,25 @@ public enum AuditAction {
     DOCUMENT_DOWNLOAD("下载文档"),
 
     /** 删除文档（软删除）。 */
-    DOCUMENT_DELETE("删除文档");
+    DOCUMENT_DELETE("删除文档"),
+
+    /**
+     * 签发文档的短期下载链接。
+     *
+     * <p>与 {@link #DOCUMENT_DOWNLOAD} 分成两条码，而不是用同一条加一个标记：
+     * 两者的语义不同 —— 这一条是「某人获准得到一个可转发的地址」，
+     * 那一条是「某人下载了一次」。当同一份文件在短时间内被大量下载时，
+     * 只有前者能说明这些下载来自同一次授权。
+     */
+    DOCUMENT_DOWNLOAD_LINK("生成文档下载链接"),
+
+    /**
+     * 重新解析文档。
+     *
+     * <p>它值得单独记一条，因为这是一次<b>会替换现有可检索内容</b>的动作
+     * （旧分块先删后写）。"这份文档的内容为什么和昨天不一样"只能从这里回答。
+     */
+    DOCUMENT_REPARSE("重新解析文档");
 
     /** 动作码 → 中文说明，供后台展示与文档生成复用。 */
     private static final Map<String, AuditAction> BY_NAME = Arrays.stream(values())

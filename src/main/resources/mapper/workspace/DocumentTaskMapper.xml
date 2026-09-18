@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  document_task 表访问：数据库实现的异步任务队列。
+
+  本表**没有 workspace_id**，因此没有任何一条语句标注 @ScopedTable ——
+  每个方法都在接口上标注了 @Unscoped 并写明理由（见 DocumentTaskMapper 的类注释）。
+  这里不重复那些理由，只强调一件事：这不是"忘了加过滤"，而是这张表的读取方
+  （worker）根本没有调用者身份可言。
+
+  枚举列只写 javaType、不指名 typeHandler —— 项目硬规则，踩过一次：
+  MyBatis 的类型注册表除按 javaType 建表外还有一张以 handler 类为键的表，
+  指名通用 EnumTypeHandler 会先命中后者，拿到的可能是为另一个枚举创建的实例。
+-->
+<mapper namespace="ai.camphub.workspace.infrastructure.DocumentTaskMapper">
+
+    <resultMap id="TaskMap" type="ai.camphub.workspace.domain.DocumentTask">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="document_id" javaType="_long"/>
+            <arg column="task_type" javaType="ai.camphub.workspace.domain.DocumentTaskType"/>
+            <arg column="status" javaType="ai.camphub.workspace.domain.DocumentTaskStatus"/>
+            <arg column="attempt_count" javaType="_int"/>
+            <arg column="max_attempts" javaType="_int"/>
+            <arg column="next_attempt_at" javaType="java.time.Instant"/>
+            <arg column="lease_owner" javaType="java.lang.String"/>
+            <arg column="lease_expires_at" javaType="java.time.Instant"/>
+            <arg column="last_error" javaType="java.lang.String"/>
+            <arg column="started_at" javaType="java.time.Instant"/>
+            <arg column="finished_at" javaType="java.time.Instant"/>
+            <arg column="created_at" javaType="java.time.Instant"/>
+            <arg column="updated_at" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="taskColumns">
+        t.id, t.document_id, t.task_type, t.status, t.attempt_count, t.max_attempts,
+        t.next_attempt_at, t.lease_owner, t.lease_expires_at, t.last_error,
+        t.started_at, t.finished_at, t.created_at, t.updated_at
+    </sql>
+
+    <!-- 幂等的入队。冲突时做一次自赋值，因此没有任何列被真正修改，
+         也就不会触发 updated_at 的 ON UPDATE 更新 —— 这一点很重要：
+         否则一次"什么都没发生的重复入队"会在库上留下修改痕迹，
+         让人误以为任务被重新创建过。 -->
+    <insert id="insertIfAbsent">
+        INSERT INTO document_task (document_id, task_type, max_attempts)
+        VALUES (#{documentId}, #{taskType}, #{maxAttempts})
+        ON DUPLICATE KEY UPDATE document_id = document_id
+    </insert>
+
+    <!-- FOR UPDATE SKIP LOCKED：并发的 worker 各自跳过已被别人锁住的行。
+         ORDER BY 与 idx_document_task_dispatch (status, next_attempt_at) 的列顺序一致，
+         因此这条查询走索引取前 N 行，不会排序整张表。 -->
+    <select id="lockDispatchable" resultMap="TaskMap">
+        SELECT
+        <include refid="taskColumns"/>
+        FROM document_task t
+        WHERE t.status = 'PENDING'
+        AND t.next_attempt_at &lt;= #{now}
+        ORDER BY t.next_attempt_at, t.id
+        LIMIT #{limit}
+        FOR UPDATE SKIP LOCKED
+    </select>
+
+    <!-- 另写一遍 status = 'PENDING' 的条件：见接口方法的注释 ——
+         它是"锁错了范围"这类错误的可见化手段（影响行数会和 ids.size() 不符）。 -->
+    <update id="markRunning">
+        UPDATE document_task
+        SET status = 'RUNNING',
+        lease_owner = #{leaseOwner},
+        lease_expires_at = #{leaseExpiresAt},
+        attempt_count = attempt_count + 1,
+        started_at = #{now},
+        finished_at = NULL
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND status = 'PENDING'
+    </update>
+
+    <!-- 回收依据只有一个：租约到期。不需要任何组件记住上一位持有者的状态。
+         last_error 不在这里清空：那条记录来自上一次失败，对排查仍然有用。 -->
+    <update id="recoverExpiredLeases">
+        UPDATE document_task
+        SET status = 'PENDING',
+        lease_owner = NULL,
+        lease_expires_at = NULL
+        WHERE status = 'RUNNING'
+        AND lease_expires_at &lt;= #{now}
+    </update>
+
+    <!-- 成功。lease 一并释放，让任务行回到一个干净的状态 ——
+         留着过期时间会让"这条行有没有人在跑"这个问题在终态上变得含糊。
+
+         lease_owner 条件是必需的：租约可能在工作途中过期并被另一个 worker 接管，
+         那时原持有者写下的结果必须被丢弃（影响行数为 0）。
+         这是"并发执行时只有一方能落地"的唯一保证。 -->
+    <update id="markSucceeded">
+        UPDATE document_task
+        SET status = 'SUCCEEDED',
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        last_error = NULL,
+        finished_at = #{now}
+        WHERE id = #{id}
+        AND status = 'RUNNING'
+        AND lease_owner = #{leaseOwner}
+    </update>
+
+    <update id="markFailed">
+        UPDATE document_task
+        SET status = 'FAILED',
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        last_error = #{lastError},
+        finished_at = #{now}
+        WHERE id = #{id}
+        AND status = 'RUNNING'
+        AND lease_owner = #{leaseOwner}
+    </update>
+
+    <!-- 放回队列并把可见时间推后。attempt_count 不在这里动 ——
+         它已经在领取时（markRunning）加过了。 -->
+    <update id="reschedule">
+        UPDATE document_task
+        SET status = 'PENDING',
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        next_attempt_at = #{nextAttemptAt},
+        last_error = #{lastError}
+        WHERE id = #{id}
+        AND status = 'RUNNING'
+        AND lease_owner = #{leaseOwner}
+    </update>
+
+    <!-- 人工重试：清零计数、立即可见、清掉上次的错误描述。
+         状态条件见接口注释：正在排队或正在跑的任务不该被打断。 -->
+    <update id="resetForRetry">
+        UPDATE document_task
+        SET status = 'PENDING',
+        attempt_count = 0,
+        next_attempt_at = #{now},
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        last_error = NULL,
+        started_at = NULL,
+        finished_at = NULL
+        WHERE document_id = #{documentId}
+        AND task_type = #{taskType}
+        AND status IN ('SUCCEEDED', 'FAILED')
+    </update>
+
+    <!-- 领取之后的重读：lockDispatchable 返回的是领取前的快照，
+         而 markRunning 已经改过 attempt_count 与租约。执行方需要准确值。 -->
+    <select id="findById" resultMap="TaskMap">
+        SELECT
+        <include refid="taskColumns"/>
+        FROM document_task t
+        WHERE t.id = #{id}
+    </select>
+
+    <select id="find" resultMap="TaskMap">
+        SELECT
+        <include refid="taskColumns"/>
+        FROM document_task t
+        WHERE t.document_id = #{documentId}
+        AND t.task_type = #{taskType}
+    </select>
+
+    <select id="countByStatus" resultType="long">
+        SELECT COUNT(*)
+        FROM document_task t
+        WHERE t.status = #{status}
+    </select>
+
+</mapper>

@@ -18,6 +18,15 @@ import ai.camphub.workspace.domain.WorkspaceDocument;
  *                      由 {@code WorkspaceAction.DELETE_DOCUMENT} 的矩阵算出，
  *                      与笔记侧同一套做法 —— 界面上的按钮与是否真的允许
  *                      必须来自同一个答案
+ * @param retryableByMe 当前调用者是否可以触发重新解析。
+ *                      与 {@code deletableByMe} 同一套做法，理由也一样；
+ *                      它单独存在是因为两者的矩阵<b>并不相同</b>：
+ *                      删除与重解析都看归属，但重解析还要看解析是否正处于
+ *                      进行中（进行中时后端会拒绝打断，见 {@code DocumentService#retryParse}）。
+ *                      只暴露一个布尔的话，界面只能靠猜来决定要不要显示"重新解析"
  */
-public record DocumentView(WorkspaceDocument document, UserBrief uploader, boolean deletableByMe) {
+public record DocumentView(WorkspaceDocument document,
+                           UserBrief uploader,
+                           boolean deletableByMe,
+                           boolean retryableByMe) {
 }
