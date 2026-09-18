@@ -76,7 +76,19 @@ public enum WorkspaceAction {
     DELETE_DOCUMENT(WorkspaceRoleInContext.OWNER, WorkspaceRoleInContext.ADMIN, WorkspaceRoleInContext.MEMBER),
 
     /** 下载文档原文件。全体成员。 */
-    DOWNLOAD_DOCUMENT(WorkspaceRoleInContext.OWNER, WorkspaceRoleInContext.ADMIN, WorkspaceRoleInContext.MEMBER);
+    DOWNLOAD_DOCUMENT(WorkspaceRoleInContext.OWNER, WorkspaceRoleInContext.ADMIN, WorkspaceRoleInContext.MEMBER),
+
+    /**
+     * 重新解析文档。同删除：还要看是不是自己上传的。
+     *
+     * <h2>为什么它需要归属判定，而上传不需要</h2>
+     * 上传只是"加入一份新东西"，代价与影响都局限于自己。重新解析不同：
+     * 它会<b>替换这份文档现有的可检索内容</b>（旧分块先删后写）。
+     * 对一份别人上传、且已经解析成功的文档反复触发重解析，
+     * 既能反复占用解析资源，也能让那份内容在一段时间里不可检索 ——
+     * 因此普通成员只能重试自己上传的，拥有者与管理员可以处理任何一条。
+     */
+    RETRY_DOCUMENT_PARSE(WorkspaceRoleInContext.OWNER, WorkspaceRoleInContext.ADMIN, WorkspaceRoleInContext.MEMBER);
 
     private final Set<WorkspaceRoleInContext> allowedRoles;
 
@@ -107,15 +119,20 @@ public enum WorkspaceAction {
     /**
      * 本动作是否区分"这条资源是不是本人创建的"。
      *
-     * <p>只有删除类动作是。它作为一个由枚举自身回答的问题存在，而不是让调用方
-     * 去 {@code switch (action) { case DELETE_NOTE, DELETE_DOCUMENT -> ... }} ——
+     * <p>删除类动作与重新解析都是。它作为一个由枚举自身回答的问题存在，
+     * 而不是让调用方去 {@code switch (action) { case DELETE_NOTE, ... -> ... }} ——
      * 后者意味着"哪些动作区分归属"这件事散落在调用点，
-     * 而新增一个删除类动作时没有任何东西会提醒你去补上那一支。
+     * 而新增一个区分归属的动作时没有任何东西会提醒你去补上那一支。
+     *
+     * <p>新增 {@link #RETRY_DOCUMENT_PARSE} 时正是这个字段在提醒改动者：
+     * 加一个动作需要回答两个问题（允许哪些身份、是否看归属），
+     * 而第二个问题不回答就会默认变成"不看归属"。
      *
      * @return 是否区分归属
      */
     public boolean isOwnershipSensitive() {
-        return this == DELETE_NOTE || this == DELETE_DOCUMENT;
+        return this == DELETE_NOTE || this == DELETE_DOCUMENT
+                || this == RETRY_DOCUMENT_PARSE;
     }
 
     /**

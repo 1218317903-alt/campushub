@@ -57,9 +57,25 @@ import org.junit.jupiter.api.Test;
  */
 class WorkspaceScopeCoverageTest {
 
-    /** 私有域的表。凡是碰这些表的语句都必须显式回答是否接受自动过滤。 */
+    /**
+     * 私有域的表。凡是碰这些表的语句都必须显式回答是否接受自动过滤。
+     *
+     * <h2>Phase 05 加入 {@code document_chunk}，但没有加入 {@code document_task}</h2>
+     * 判据是"这张表有没有 {@code workspace_id}"：
+     * <ul>
+     *   <li>{@code document_chunk} 有（见第十一节的偏离说明：这是一份刻意保留的冗余列）。
+     *       因此它的每条查询都能被空间过滤，也就必须二选一。</li>
+     *   <li>{@code document_task} <b>没有</b>。它是一张按文档主键工作的队列，
+     *       不认识"空间"这个概念。把它列进来只会让下面那条"表必须出现在 FROM 里"的
+     *       检查通过，而它想验证的"这张表受不受过滤"对它根本不成立。
+     *       它的访问方法是全 {@link Unscoped} 且都写了理由的 ——
+     *       这一点由上面那张 {@code MAPPERS} 表里的对应关系保证，
+     *       不需要靠本清单来兜。</li>
+     * </ul>
+     */
     private static final Set<String> PRIVATE_TABLES = Set.of(
-            "workspace", "workspace_member", "workspace_invite", "document", "note");
+            "workspace", "workspace_member", "workspace_invite", "document", "note",
+            "document_chunk");
 
     /** 需要被空间过滤的语句类型。INSERT 不在其中，理由见类注释。 */
     private static final Set<String> RESTRICTABLE_TYPES = Set.of("select", "update", "delete");
@@ -73,7 +89,11 @@ class WorkspaceScopeCoverageTest {
             "mapper/workspace/WorkspaceInviteMapper.xml",
             "ai.camphub.workspace.infrastructure.NoteMapper", "mapper/workspace/NoteMapper.xml",
             "ai.camphub.workspace.infrastructure.DocumentMapper",
-            "mapper/workspace/DocumentMapper.xml");
+            "mapper/workspace/DocumentMapper.xml",
+            "ai.camphub.workspace.infrastructure.DocumentChunkMapper",
+            "mapper/workspace/DocumentChunkMapper.xml",
+            "ai.camphub.workspace.infrastructure.DocumentTaskMapper",
+            "mapper/workspace/DocumentTaskMapper.xml");
 
     /** 匹配 {@code <select id="x">} 这类开始标签，同时取出语句类型与 id。 */
     private static final Pattern STATEMENT = Pattern.compile(

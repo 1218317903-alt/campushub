@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  document_chunk 表访问。三条 select/update/delete 都标注了 @ScopedTable ——
+  这张表带 workspace_id（刻意冗余，见 V6__document_pipeline.sql），
+  因此第三层防线能直接作用于它。
+
+  枚举列只写 javaType、不指名 typeHandler（项目硬规则）。本表没有枚举列。
+-->
+<mapper namespace="ai.camphub.workspace.infrastructure.DocumentChunkMapper">
+
+    <resultMap id="ChunkMap" type="ai.camphub.workspace.domain.DocumentChunk">
+        <constructor>
+            <idArg column="id" javaType="_long"/>
+            <arg column="document_id" javaType="_long"/>
+            <arg column="workspace_id" javaType="_long"/>
+            <arg column="ordinal" javaType="_int"/>
+            <arg column="heading" javaType="java.lang.String"/>
+            <arg column="content" javaType="java.lang.String"/>
+            <arg column="char_count" javaType="_int"/>
+        </constructor>
+    </resultMap>
+
+    <!-- 批量插入。调用方保证 chunks 非空 —— 空集合会生成一条语法错误的 SQL
+         （VALUES 后面什么都不跟），详见 DocumentChunkMapper 的注释。
+
+         char_count 由参数对象自己算出来（ChunkDraft#charCount），
+         而不是让调用方另传一个值：两者一旦可以分别传入，
+         就允许"说 800 字、实际 1200 字"的行存在，而列上没有约束能拦住它。 -->
+    <insert id="insertBatch">
+        INSERT INTO document_chunk (document_id, workspace_id, ordinal, heading, content, char_count)
+        VALUES
+        <foreach collection="chunks" item="chunk" separator=",">
+            (#{chunk.documentId},
+             #{chunk.workspaceId},
+             #{chunk.ordinal},
+             #{chunk.heading},
+             #{chunk.content},
+             #{chunk.charCount})
+        </foreach>
+    </insert>
+
+    <!-- 重试解析前清场。没有这一步，第二次执行会撞 uk_document_chunk_ordinal，
+         于是"重试"变成"第一次失败之后永远失败"。 -->
+    <delete id="deleteByDocument">
+        DELETE FROM document_chunk
+        WHERE document_id = #{documentId}
+    </delete>
+
+    <select id="countByDocument" resultType="long">
+        SELECT COUNT(*)
+        FROM document_chunk c
+        WHERE c.document_id = #{documentId}
+    </select>
+
+    <select id="findByDocument" resultMap="ChunkMap">
+        SELECT c.id, c.document_id, c.workspace_id, c.ordinal, c.heading, c.content, c.char_count
+        FROM document_chunk c
+        WHERE c.document_id = #{documentId}
+        ORDER BY c.ordinal
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+</mapper>

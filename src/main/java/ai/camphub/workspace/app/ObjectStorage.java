@@ -1,6 +1,9 @@
 package ai.camphub.workspace.app;
 
 import java.io.InputStream;
+import java.net.URI;
+import java.time.Duration;
+import java.util.Optional;
 
 /**
  * 对象存储端口：文档字节的读写删。
@@ -61,4 +64,36 @@ public interface ObjectStorage {
      * @param storageKey 存储键
      */
     void delete(String storageKey);
+
+    /**
+     * 生成一个<b>绕开应用服务器</b>的直接读取地址，若后端支持。
+     *
+     * <h2>为什么返回 {@code Optional} 而不是直接返回 URL</h2>
+     * 这个方法的语义是精确的：<b>"客户端能不能不经过本应用就去读取内容"</b>。
+     * 对象存储能（预先签名的 URL 由存储服务自己校验），本地磁盘不能 ——
+     * 字节就在本应用的磁盘上，没有任何"绕开"可言。
+     *
+     * <p>让本地实现返回 {@code Optional.empty()}，是把"不能"如实表达出来，
+     * 而不是返回一个实际上仍然经过应用的地址来假装支持。应用层据此选择
+     * 另一条路径（本应用签发的短期令牌链接），而那两件事的区别是真实的：
+     * 前者省掉一次应用侧的数据搬运，后者不省。
+     *
+     * <p>反过来，若签名设计成"总返回一个 URL"，本地实现就只能返回一个
+     * 指向自己的地址 —— 于是调用方再也无法区分"这个链接会不会经过我"，
+     * 而这正是容量规划时要回答的问题。
+     *
+     * <h2>实现必须做到的两件事</h2>
+     * <ol>
+     *   <li><b>地址必须有时限</b>，且不得超过传入的 {@code ttl}。一个永久的
+     *       直链等同于把私有内容公开 —— 它会被转发、被收藏、被搜索到。</li>
+     *   <li><b>地址必须带下载文件名</b>（若后端支持该参数），
+     *       否则浏览器会用一个存储键式的随机名保存文件。</li>
+     * </ol>
+     *
+     * @param storageKey   存储键
+     * @param downloadName 建议的下载文件名；仅用于响应头，绝不参与路径拼接
+     * @param ttl          有效时长
+     * @return 直链；后端不支持时为空
+     */
+    Optional<URI> directGetUrl(String storageKey, String downloadName, Duration ttl);
 }

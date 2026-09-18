@@ -1,9 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<!-- document 表访问。全部方法都接受 WorkspaceScopeInterceptor 追加空间过滤。 -->
+<!--
+  document 表访问。
+
+  方法分成两组（见 DocumentMapper 的类注释）：
+    · 请求路径：标注 @ScopedTable，接受 WorkspaceScopeInterceptor 追加空间过滤
+    · 后台路径：标注 @Unscoped（worker 在没有调用者身份的线程里跑）
+
+  枚举列只写 javaType、不指名 typeHandler —— 项目硬规则，踩过一次：
+  MyBatis 的类型注册表除按 javaType 建表外还有一张以 handler 类为键的表，
+  指名通用 EnumTypeHandler 会先命中后者，拿到的可能是为另一个枚举创建的实例
+  （表现为 "No enum constant <别的枚举>.PRIVATE"，且只在真正查询时暴露）。
+-->
 <mapper namespace="ai.camphub.workspace.infrastructure.DocumentMapper">
 
+    <!-- 构造器映射按位置绑定，因此列的顺序必须与 WorkspaceDocument 的字段顺序一致。
+         这一点比它看起来更值得强调：顺序写错不会报错，
+         只会让两个相邻的列值悄悄对调（例如把 chunk_count 读成 text_length）。 -->
     <resultMap id="DocumentMap" type="ai.camphub.workspace.domain.WorkspaceDocument">
         <constructor>
             <idArg column="id" javaType="_long"/>
@@ -17,18 +31,27 @@
             <arg column="sha256" javaType="java.lang.String"/>
             <arg column="parse_status" javaType="ai.camphub.workspace.domain.DocumentParseStatus"/>
             <arg column="parse_message" javaType="java.lang.String"/>
+            <arg column="parse_progress" javaType="_int"/>
+            <arg column="chunk_count" javaType="_int"/>
+            <arg column="text_length" javaType="_int"/>
+            <arg column="parser_version" javaType="java.lang.String"/>
+            <arg column="parsed_at" javaType="java.time.Instant"/>
             <arg column="created_at" javaType="java.time.Instant"/>
             <arg column="updated_at" javaType="java.time.Instant"/>
+            <arg column="deleted_at" javaType="java.time.Instant"/>
         </constructor>
     </resultMap>
 
     <sql id="documentColumns">
         d.id, d.public_id, d.workspace_id, d.uploader_id, d.name, d.mime_type, d.size_bytes,
-        d.storage_key, d.sha256, d.parse_status, d.parse_message, d.created_at, d.updated_at
+        d.storage_key, d.sha256, d.parse_status, d.parse_message, d.parse_progress,
+        d.chunk_count, d.text_length, d.parser_version, d.parsed_at,
+        d.created_at, d.updated_at, d.deleted_at
     </sql>
 
     <!-- parse_status 不在插入列里：它永远从列的默认值 PENDING 开始。
          给调用方一个直接指定状态的入口，等于允许造出"声称可检索但内容还没被解析"的行。
+         解析结果那几列同理 —— 它们由 worker 写入，不由上传者决定。
          storage_key 与 sha256 **在**插入列里：写入顺序是"字节先落存储、再登记元数据"，
          因此走到这一步时键与哈希都已经存在，它们和文件名一样是这次上传的事实。 -->
     <insert id="insert">
@@ -78,6 +101,67 @@
         SET deleted_at = #{now}
         WHERE id = #{id}
         AND deleted_at IS NULL
+    </update>
+
+    <!-- ==================== 后台路径（worker 以系统身份调用） ==================== -->
+
+    <!-- 故意**不**带 deleted_at IS NULL：CLEANUP 任务要能看到已删除的行，
+         PARSE 任务需要知道"这份文档已经不在了"才能跳过。
+         详见 DocumentMapper#findByIdForProcessing。 -->
+    <select id="findByIdForProcessing" resultMap="DocumentMap">
+        SELECT
+        <include refid="documentColumns"/>
+        FROM document d
+        WHERE d.id = #{id}
+    </select>
+
+    <!-- 起始进度给 5 而不是 0：这是"任务已被领走"唯一的用户可见证据。
+         缺了它，排队中与正在解析的文档在前端长得完全一样。 -->
+    <update id="markProcessing">
+        UPDATE document
+        SET parse_status = 'PROCESSING',
+        parse_progress = CASE WHEN parse_progress &lt; 5 THEN 5 ELSE parse_progress END,
+        parse_message = NULL
+        WHERE id = #{id}
+    </update>
+
+    <!-- 成功时把 progress 归 100，并清掉上一次的失败原因 ——
+         一份先失败、后被人工重试成功的文档，不应该继续带着旧的错误描述。 -->
+    <update id="markReady">
+        UPDATE document
+        SET parse_status = 'READY',
+        parse_progress = 100,
+        parse_message = NULL,
+        text_length = #{textLength},
+        chunk_count = #{chunkCount},
+        parser_version = #{parserVersion},
+        parsed_at = #{parsedAt}
+        WHERE id = #{id}
+    </update>
+
+    <update id="markFailed">
+        UPDATE document
+        SET parse_status = 'FAILED',
+        parse_message = #{parseMessage}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 重试前把状态放回 PENDING 并归零进度。留在 PROCESSING 会让用户在整个
+         退避等待期间看到"正在解析"，而实际上没有任何东西在跑。
+         parse_message 不清空：上一次的失败原因在重试之前仍有参考价值。 -->
+    <update id="markAwaitingRetry">
+        UPDATE document
+        SET parse_status = 'PENDING',
+        parse_progress = 0
+        WHERE id = #{id}
+    </update>
+
+    <!-- 置空存储键 = "字节已经不在存储上了"。CLEANUP 任务成功后才写，
+         因此这条 UPDATE 也是"清理完成"这个事实的唯一落点。 -->
+    <update id="clearStorageKey">
+        UPDATE document
+        SET storage_key = NULL
+        WHERE id = #{id}
     </update>
 
 </mapper>

@@ -1,4 +1,5 @@
 import { del, get, post, put } from './http'
+import type { PageResponse } from './types'
 
 /**
  * 社区接口。
@@ -36,17 +37,6 @@ export interface Tag {
   slug: string
   name: string
   postCount: number
-}
-
-/** 分页响应。字段与后端 `PageResponse` 一一对应。 */
-export interface PageResponse<T> {
-  items: T[]
-  /** 从 1 开始。后端已归一化，前端不需要再判断 0 */
-  page: number
-  /** 实际生效的页大小，可能小于请求值（服务端有上限） */
-  size: number
-  total: number
-  hasNext: boolean
 }
 
 /** 列表卡片。**不含正文** —— 列表页拿到的是摘要。 */

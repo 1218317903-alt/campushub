@@ -189,7 +189,61 @@ export async function request<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<ApiResult<T>> {
-  const first = await send<T>(method, path, options)
+  return withRefreshRetry(path, () => send<T>(method, path, options))
+}
+
+/**
+ * 上传一个 multipart 表单。文件上传走它，而不是 {@link post}。
+ *
+ * <h2>为什么必须是一条独立的路径</h2>
+ * {@link post} 会把请求体 JSON 序列化并写上 {@code Content-Type: application/json} ——
+ * 对 {@link FormData} 这么做会得到一个"看似发出去、服务端解析不出任何字段"的请求。
+ * multipart 的 {@code Content-Type} 里带着一段**由浏览器生成的边界字符串**，
+ * 而它必须与请求体里的分隔符逐字一致；手写一个 {@code Content-Type} 就是在
+ * 制造一个边界对不上的请求。因此这里刻意**不设置**它，交给浏览器。
+ *
+ * <h2>超时更长，且这是有意的</h2>
+ * 默认的 10 秒是给"一次查询/一次写入"用的。上传的耗时取决于文件大小与上行带宽，
+ * 用同一个超时会让一份稍大的文件在正常网络下也失败 —— 而那看起来像是服务端的问题。
+ *
+ * @param path    以 `/` 开头、**不含** `/api` 前缀的路径
+ * @param form    表单（至少要有一个文件字段）
+ * @param options 请求选项（不可传 body）
+ * @returns 成功时的数据与链路 ID
+ * @throws ApiError     服务端返回了结构化错误
+ * @throws NetworkError 网络失败、超时，或响应无法解析为 JSON
+ */
+export async function uploadFile<T>(
+  path: string,
+  form: FormData,
+  options: Omit<RequestOptions, 'body'> = {},
+): Promise<ApiResult<T>> {
+  return withRefreshRetry(path, () => sendMultipart<T>(path, form, options))
+}
+
+/** 上传的默认超时。与查询类请求分开：它取决于文件大小与上行带宽，而不是服务端思考时间。 */
+const DEFAULT_UPLOAD_TIMEOUT_MS = 120_000
+
+/**
+ * 「先请求一次；若因访问令牌过期被拒，刷新后重试一次」的公共骨架。
+ *
+ * <h2>为什么把它抽出来</h2>
+ * 这条规则不是"通用重试"（见 {@link request} 的注释），而是这条链路的一个固定环节：
+ * 任何一条到达业务逻辑之前就被安全过滤链拒掉的请求，重试它都不产生副作用。
+ * 上传与普通请求都需要它，而在两处各写一遍的代价是 —— 早晚只有一处会跟着改，
+ * 而漏掉的那一处表现是"上传时恰逢令牌过期 → 用户看到一个莫名其妙的失败"。
+ *
+ * @param path     路径，用于判断是否属于认证入口自身（认证入口不参与重试）
+ * @param sendOnce 发一次请求的回调；可能被调用两次
+ * @returns 成功时的数据与链路 ID
+ * @throws ApiError     服务端返回了结构化错误
+ * @throws NetworkError 网络失败
+ */
+async function withRefreshRetry<T>(
+  path: string,
+  sendOnce: () => Promise<SendResult<T>>,
+): Promise<ApiResult<T>> {
+  const first = await sendOnce()
   if (!(first.error instanceof ApiError)) {
     if (first.error) {
       throw first.error
@@ -218,7 +272,7 @@ export async function request<T>(
     throw error
   }
 
-  const second = await send<T>(method, path, options)
+  const second = await sendOnce()
   if (second.error) {
     throw second.error
   }
@@ -245,12 +299,6 @@ async function send<T>(
   path: string,
   options: RequestOptions,
 ): Promise<SendResult<T>> {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const timeoutSignal = AbortSignal.timeout(timeoutMs)
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, timeoutSignal])
-    : timeoutSignal
-
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...options.headers,
@@ -269,16 +317,72 @@ async function send<T>(
     payload = JSON.stringify(options.body)
   }
 
-  let response: Response
-  try {
-    response = await fetch(buildUrl(path, options.query), {
+  return exchange<T>(
+    buildUrl(path, options.query),
+    {
       method,
       headers,
       ...(payload === undefined ? {} : { body: payload }),
-      signal,
-    })
+    },
+    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    options.signal,
+  )
+}
+
+/**
+ * 发送一次 multipart 请求（不含重试）。
+ *
+ * @param path    路径
+ * @param form    表单
+ * @param options 请求选项
+ * @returns 结果
+ */
+async function sendMultipart<T>(
+  path: string,
+  form: FormData,
+  options: Omit<RequestOptions, 'body'>,
+): Promise<SendResult<T>> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...options.headers,
+  }
+  const accessToken = authBridge?.accessToken() ?? null
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`
+  }
+  // 刻意不设置 Content-Type：边界由浏览器生成，手写的那个会与请求体不一致。
+
+  return exchange<T>(
+    buildUrl(path, options.query),
+    { method: 'POST', headers, body: form },
+    options.timeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS,
+    options.signal,
+  )
+}
+
+/**
+ * 真正发起请求并把结果规范化。
+ *
+ * @param url       完整地址
+ * @param init      fetch 参数
+ * @param timeoutMs 超时
+ * @param callerSignal 调用方的取消信号
+ * @returns 结果
+ */
+async function exchange<T>(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  callerSignal?: AbortSignal,
+): Promise<SendResult<T>> {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal
+
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, signal })
   } catch (error) {
-    const aborted = options.signal?.aborted ?? false
+    const aborted = callerSignal?.aborted ?? false
     return {
       traceId: null,
       error: new NetworkError(

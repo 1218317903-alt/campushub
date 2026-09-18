@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **当前版本** | `v0.4.0` · Phase 04 · Workspace & Resource Authorization |
+| **当前版本** | `v0.5.0` · Phase 05 · Object Storage & Document Workflow |
 | **工程约束** | [V2 · 项目宪法](docs/00-工程规约.md)（最高效力） |
 | **执行计划** | [Phase 01 ~ 13](docs/12-phase-plan.md) |
 | **技术基线** | Java 21 · Spring Boot 4.1.1 · MySQL 8.4 · Vue 3 + TypeScript |
@@ -55,7 +55,7 @@ make fe-dev
 「运行状态」导航对应 `/system`，其中的实例信息来自真实后端。
 
 其中「数据库 Schema 基线」应**等于 `src/main/resources/db/migration/` 里编号最大的那个迁移版本**
-（当前为 `V4`），它说明 Flyway 迁移已真实生效。这里刻意不写死一个数字：
+（当前为 `V6`），它说明 Flyway 迁移已真实生效。这里刻意不写死一个数字：
 该值曾经长期停留在 `V1` 而无人察觉，现在由 `SystemInfoIT` 断言它等于最新迁移版本，
 "加了迁移却忘了更新标记"会直接让构建失败。
 
@@ -130,6 +130,7 @@ node scripts/bench/query-baseline.mjs --username demo01 --password 'CampusHub-De
 | `make verify` | 完整校验：单元 + 集成 | ✅ |
 | `make run` | 本地启动后端 | 需 MySQL |
 | `make fe-install` / `make fe-dev` / `make fe-build` | 前端依赖 / 开发 / 构建 | ❌ |
+| `make e2e` | 真实浏览器验收（Phase 05 起，需 `up` + `run` + `fe-dev` 同时在跑） | ❌ |
 | `make help` | 列出全部命令 | ❌ |
 
 ---
@@ -175,9 +176,26 @@ node scripts/bench/query-baseline.mjs --username demo01 --password 'CampusHub-De
 > 未配置或长度不足 32 字节时应用**启动即失败** —— 这是刻意的：
 > 一个"能启动但人人可猜"的默认密钥，等于把所有用户的账号交给第一个读到源码的人。
 
+**Phase 05 已完成**（`v0.5.0`）：**对象存储与文档工作流** ——
+`Upload → 任务队列 → 解析 → 分块 → READY / FAILED`，支持纯文本 / Markdown / PDF；
+存储是**一个端口、两种实现**（本地磁盘 / S3 兼容，含预签名直链）；短期下载链接；
+删除时清理分块与字节。前端补齐空间与文档界面（上传 · 解析进度 · 分块查看 · 重试 · 下载）。
+
+> **异步用的是一张任务表 + 轮询 worker，不是消息队列**（[设计文档](docs/document-pipeline.md)）：
+> `document_task` 与文档行**同事务入队**，领取走 `FOR UPDATE SKIP LOCKED`，
+> 租约保证 worker 崩溃后任务能回来。代价写在文档里，不藏着 ——
+> `poll-interval-ms = 3000` 就是"入队到开始处理"的延迟下限，吞吐上界约 1.7 任务/秒（单实例）。
+> 换 MQ 的判据也写在那儿：**等压测数据说话**。
+>
+> **失败分两类**：可重试（字节读不到、DB 瞬时失败）按指数退避重排；
+> 不可重试（无解析器、文件损坏、页数/长度超限）直接终态并给出面向用户的原因 ——
+> 一份损坏的文件重试一百次只是让同样的字节被读一百次。
+>
+> **下载内容永不内联**（`Content-Disposition: attachment`）：内联意味着用户上传的内容
+> 会在本站域的源下被浏览器解析渲染，而那正是"上传一个 HTML 就得到一个 XSS"的成因。
+
 后续阶段按 [Phase 计划](docs/12-phase-plan.md) 推进：
-对象存储与文档工作流 → 数据采集 → 搜索 →
-RAG → 性能工程 → 通知与审核 → Agent Runtime → Agent 安全 → 服务化与可观测。
+数据采集 → 搜索 → RAG → 性能工程 → 通知与审核 → Agent Runtime → Agent 安全 → 服务化与可观测。
 
 ### 认证流程速览
 
@@ -256,15 +274,19 @@ CampusHubAI/
 │   │   ├── domain/        User · UserCredential · UserPrincipal · PasswordPolicy …
 │   │   └── infrastructure/ Mapper + XML · security/（JWT 过滤器与编解码）
 │   ├── community/         模块：社区内容域（Phase 03）
-│   ├── workspace/         模块：协作空间与资源级鉴权（Phase 04）
-│   │   ├── api/           Workspace · Note · Document · Invite 控制器 + DTO
+│   ├── workspace/         模块：协作空间 · 资源级鉴权 · 文档流水线（Phase 04/05）
+│   │   ├── api/           Workspace · Note · Document · DocumentDownload · Invite 控制器 + DTO
 │   │   ├── app/           Workspace / Note / Document 服务 · AuthorizationService（第二层防线）
+│   │   │                  · 解析与分块（DocumentParsingService）· 任务队列三件套
+│   │   │                    （DocumentTaskRunner / Processor / Worker）
+│   │   │                  · 下载链接（DownloadLinkService · DownloadTokenService）
 │   │   │                  · ObjectStorage（端口）· WorkspaceScopeContext（范围绑定）
 │   │   ├── domain/        Workspace · WorkspaceMember · WorkspaceInvite · Note · Document
-│   │   │                  · WorkspaceAction（权限矩阵）· WorkspaceVisibility …
-│   │   └── infrastructure/ 五个 Mapper + XML
+│   │   │                  · WorkspaceAction（权限矩阵）· DocumentChunker（切分规则）…
+│   │   └── infrastructure/ 七个 Mapper + XML
+│   │                       · parser/（Markdown · 纯文本 · PDF）
 │   │                       · scope/（第三层防线：拦截器 · SQL 改写 · 请求结束清理）
-│   │                       · storage/（LocalFileObjectStorage）
+│   │                       · storage/（LocalFileObjectStorage · S3ObjectStorage）
 │   └── platform/          平台能力：audit/（安全审计写入）
 ├── src/main/resources/
 │   ├── application.yml    基础配置（入库，不含凭据）
@@ -304,7 +326,8 @@ CampusHubAI/
 | [docs/01-product.md](docs/01-product.md) | 产品定位 · 核心用户 · 使用场景 · 主流程 · 信息架构 · MVP 范围 |
 | [docs/02-architecture.md](docs/02-architecture.md) | 模块边界 · 技术选型与取舍 · 过度设计识别 |
 | [docs/03-domain-permission.md](docs/03-domain-permission.md) | 核心领域模型 · 数据库模型 · 权限模型 |
-| [docs/resource-authorization.md](docs/resource-authorization.md) | **资源级授权**：三层防线 · 权限矩阵 · 404/403 边界 · 数据范围过滤 · 定向邀请 · 文档存储 |
+| [docs/resource-authorization.md](docs/resource-authorization.md) | **资源级授权**：三层防线 · 权限矩阵 · 404/403 边界 · 数据范围过滤 · 定向邀请 |
+| [docs/document-pipeline.md](docs/document-pipeline.md) | **文档流水线**：上传 · 存储（本地 / S3）· 任务队列与租约 · 解析与分块 · 两条下载路径 · 失败分类 |
 | [docs/04-security.md](docs/04-security.md) | Web 安全 · 爬虫安全 · AI 安全 |
 | [docs/05-data-platform.md](docs/05-data-platform.md) | 数据 Bootstrap · 合规来源 · 采集管线 · 文档处理 |
 | [docs/06-search-ai.md](docs/06-search-ai.md) | 搜索架构 · RAG 架构 · Agent 架构 · Multi-Agent 引入条件 |
@@ -313,6 +336,15 @@ CampusHubAI/
 | [docs/09-backlog-v0.md](docs/09-backlog-v0.md) | 早期 Backlog（Epic / Story / 验收 / 依赖） |
 | [docs/11-开发环境.md](docs/11-开发环境.md) | 本机实测环境、依赖版本基线、故障排查 |
 | [docs/adr/](docs/adr/) | 架构决策记录（ADR） |
+
+### 阶段交付报告（§17 十一节模板）
+
+| 报告 | 内容 |
+|---|---|
+| [phase-01-03-quality-review.md](docs/reports/phase-01-03-quality-review.md) | Phase 01–03 阶段末的质量复查（发现的缺陷与修复） |
+| [phase-03-delivery.md](docs/reports/phase-03-delivery.md) | Phase 03 · Community MVP & Bootstrap |
+| [phase-04-delivery.md](docs/reports/phase-04-delivery.md) | Phase 04 · Workspace & Resource Authorization（三层防线） |
+| [phase-05-delivery.md](docs/reports/phase-05-delivery.md) | Phase 05 · Object Storage & Document Workflow（任务队列 · 解析分块 · 下载令牌） |
 
 ### ADR
 

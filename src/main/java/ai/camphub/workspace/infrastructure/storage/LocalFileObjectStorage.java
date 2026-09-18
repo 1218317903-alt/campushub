@@ -6,9 +6,12 @@ import ai.camphub.workspace.app.ObjectStorage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,10 +19,10 @@ import org.slf4j.LoggerFactory;
 /**
  * 本地文件系统的对象存储实现。
  *
- * <h2>为什么 Phase 04 就用它，而不是等 Phase 05 的 MinIO</h2>
- * 一个"上传永远返回 503、下载永远返回 503"的文档功能对使用者等于不存在。
- * 本地磁盘是真实的存储后端（不是空壳实现），它让整条链路在本阶段就能跑通并被验收；
- * Phase 05 增加 MinIO/S3 适配器时，替换的只是一个 Bean，应用层与对外契约都不动。
+ * <h2>它是真实后端，不是占位实现</h2>
+ * 上传与下载都能真正跑通，被集成测试覆盖。选择它作为默认后端的理由是
+ * "克隆下来就能跑"：不必先起一个对象存储服务。S3 兼容后端（{@link S3ObjectStorage}）
+ * 是同等地位的另一条实现，通过 {@code app.workspace.storage.backend} 切换。
  *
  * <h2>路径安全：两道，而且是不同的两道</h2>
  * <ol>
@@ -49,7 +52,7 @@ public class LocalFileObjectStorage implements ObjectStorage {
     /** 允许的 keyHint 形状。见类注释第 1 条。 */
     private static final Pattern KEY_HINT = Pattern.compile("[A-Za-z0-9_-]{1,64}");
 
-    /** 键的固定前缀。将来接对象存储时它是 bucket 内的路径前缀。 */
+    /** 键的固定前缀。与 S3 实现保持一致，使两条后端的键布局可以互相迁移。 */
     private static final String KEY_PREFIX = "documents/";
 
     /** 临时文件后缀。以点开头，避免被当成正式文件枚举到。 */
@@ -73,7 +76,7 @@ public class LocalFileObjectStorage implements ObjectStorage {
             // 但绝不回给客户端 —— 它出现在日志里，用于定位"哪次调用传了不合法的前缀"。
             throw new IllegalArgumentException("存储键前缀不合法：" + keyHint);
         }
-        String key = KEY_PREFIX + keyHint.substring(0, 2) + "/" + keyHint;
+        String key = keyOf(keyHint);
         Path target = resolveInsideRoot(key);
         Path temp = target.resolveSibling(target.getFileName() + TEMP_SUFFIX);
 
@@ -114,6 +117,23 @@ public class LocalFileObjectStorage implements ObjectStorage {
         }
     }
 
+    /**
+     * 删除内容。
+     *
+     * <h2>两种失败被刻意区分开</h2>
+     * <ul>
+     *   <li><b>键不存在</b>：静默成功。这是删除的常见情形（重试、重复清理），
+     *       而且它的语义"让它不存在"已经满足。</li>
+     *   <li><b>存储故障</b>（权限、磁盘错误）：<b>抛出</b>异常。
+     *       这一点在 Phase 05 之前是吞掉的，当时删除只发生在请求线程里，
+     *       吞掉它顶多丢一条日志。现在删除还会由 CLEANUP 任务重试 ——
+     *       若失败被吞成成功，任务会标记完成，字节永久留在存储上，
+     *       而库里再没有任何线索指向它。失败必须传上去，才能被重试。</li>
+     * </ul>
+     *
+     * @param storageKey 存储键
+     * @throws UncheckedIOException 存储本身出错时
+     */
     @Override
     public void delete(String storageKey) {
         if (storageKey == null || storageKey.isBlank()) {
@@ -123,17 +143,50 @@ public class LocalFileObjectStorage implements ObjectStorage {
         try {
             target = resolveInsideRoot(storageKey);
         } catch (IllegalArgumentException ex) {
-            // 逃出根目录的键**绝不执行删除**，但也**不抛异常**。
-            // 两个决定各有理由：
-            //   · 不删：这是唯一正确的选择 —— 一个能穿越的删除键会删掉根目录之外的任意文件。
-            //   · 不抛：删除的唯一用途是"让它不存在"（正常删除、以及失败路径上的清理）。
-            //     在清理路径上抛异常，会让真正的失败原因被一个次生异常盖掉；
-            //     而调用方为了让清理不抛，只会写一个空的 catch，那等于把唯一的线索也扔掉。
-            //     记一条 warn，是这里唯一有信息量的动作。
+            // 逃出根目录的键**绝不执行删除**，但也不抛异常：
+            // 一个能穿越的删除键会删掉根目录之外的任意文件，所以不删；
+            // 而抛出异常只会在清理路径上盖掉真正的失败原因。
+            // 记一条 warn，是这里唯一有信息量的动作。
             log.warn("拒绝删除逃出存储根目录的键：key={}", storageKey);
             return;
         }
-        deleteQuietly(target);
+        try {
+            Files.deleteIfExists(target);
+        } catch (IOException ex) {
+            throw new UncheckedIOException("删除文档内容失败：key=" + storageKey, ex);
+        }
+    }
+
+    /**
+     * 本地磁盘后端<b>无法</b>提供绕开应用服务器的直链。
+     *
+     * <p>字节就在这个进程能访问的磁盘上，任何"直链"最终仍然要由本应用读出来再写出去。
+     * 因此这里如实返回空，由应用层改用自己签发的短期令牌链接
+     * （见 {@code DownloadTokenService}）—— 那条路径有同样的对外语义
+     * （一个时限内可直接使用的下载地址），只是不省那次数据搬运。
+     *
+     * @param storageKey   存储键
+     * @param downloadName 建议的下载文件名
+     * @param ttl          有效时长
+     * @return 恒为空
+     */
+    @Override
+    public Optional<URI> directGetUrl(String storageKey, String downloadName, Duration ttl) {
+        return Optional.empty();
+    }
+
+    /**
+     * 由 keyHint 生成最终存储键。
+     *
+     * <p>按前两位分目录：单个目录下堆几万个文件会让某些文件系统的目录遍历变慢，
+     * 而分两层之后每个目录的文件数下降两个数量级。分目录对读取没有影响 ——
+     * 键整串记在数据库里，读的时候按原样解析。
+     *
+     * @param keyHint 已校验的前缀
+     * @return 存储键
+     */
+    private static String keyOf(String keyHint) {
+        return KEY_PREFIX + keyHint.substring(0, 2) + "/" + keyHint;
     }
 
     /**
@@ -153,6 +206,9 @@ public class LocalFileObjectStorage implements ObjectStorage {
 
     /**
      * 尽力删除，不抛异常。用于失败路径上的清理。
+     *
+     * <p>与 {@link #delete} 的区别是明确的：这个方法用在"本来就已经在处理另一个失败"
+     * 的路径上，那里再抛一个异常只会盖掉真正的失败原因。
      *
      * @param path 待删除路径
      */
