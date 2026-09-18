@@ -46,6 +46,29 @@ public class TestcontainersConfiguration {
      * 提供 MySQL 容器，并把连接信息以 {@code @ServiceConnection} 的方式
      * 自动注入 Spring 的数据源配置，无需手写 JDBC URL。
      *
+     * <h2>为什么要显式指定连接时区（这是一个真实的红灯换来的）</h2>
+     * {@code @ServiceConnection} 生成的 JDBC URL <b>不包含</b> {@code application.yml}
+     * 里那几个参数，因此 {@code connectionTimeZone} 会退回驱动默认值 {@code LOCAL} ——
+     * 也就是<b>跑测试的那台机器的默认时区</b>。而容器是 {@code TZ=Asia/Shanghai}。
+     * 两者一致时一切正常，不一致时的时间差会直接吃掉功能：
+     *
+     * <ul>
+     *   <li>应用写入 {@code next_attempt_at} 等列时传的是 {@link java.time.Instant}，
+     *       驱动按 JVM 默认时区转成墙上时间；
+     *   <li>而 {@code insertIfAbsent} 不给 {@code next_attempt_at} 赋值，用的是列默认值
+     *       {@code CURRENT_TIMESTAMP(3)}，取的是<b>会话时区</b>（容器 = +08:00）。
+     * </ul>
+     *
+     * <p>于是当 JVM 默认时区是 UTC 时（GitHub Actions runner 就是 UTC），
+     * 新入队的任务 {@code next_attempt_at} 比应用算出来的"现在"晚 8 小时，
+     * 领取语句 {@code next_attempt_at <= ?} 恒不成立 —— <b>没有任何一份文档会被解析</b>。
+     * 表现是全部文档流水线用例一起失败，而失败信息指向"分块数为 0"，
+     * 与真正的原因相隔很远。本机跑测试恰好是 +08:00，所以这个差异被完整地藏了一整个阶段。
+     *
+     * <p>补上这两个参数之后，测试与 {@code application.yml} 里的生产配置<b>完全一致</b>，
+     * 测试结论因此与"跑在什么时区的机器上"无关 —— 这也正是集成测试该有的性质。
+     * 生产侧本来就有这两个参数，所以这不是"为测试放宽条件"，而是让测试终于跑在生产约定上。
+     *
      * @param image 镜像名，可由 testcontainers.mysql.image 属性覆盖
      * @return MySQL 容器
      */
@@ -58,7 +81,9 @@ public class TestcontainersConfiguration {
                 .withUsername(TEST_USERNAME)
                 .withPassword(TEST_PASSWORD)
                 // 让容器时区与开发环境一致，避免"测试里时间是 UTC、开发是 +08:00"的隐性差异。
-                // 注意：这里只统一容器时区；应用侧仍应在连接串中显式指定 connectionTimeZone。
-                .withEnv("TZ", "Asia/Shanghai");
+                .withEnv("TZ", "Asia/Shanghai")
+                // 与 application.yml 的 JDBC 串逐字一致：@ServiceConnection 不会带上它们。
+                .withUrlParam("connectionTimeZone", "Asia/Shanghai")
+                .withUrlParam("forceConnectionTimeZoneToSession", "true");
     }
 }
