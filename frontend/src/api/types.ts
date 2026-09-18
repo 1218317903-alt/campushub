@@ -29,3 +29,22 @@ export interface ApiErrorBody {
   /** 字段级错误明细；后端保证恒为数组（可能为空），前端无需判空 */
   details: ApiFieldViolation[]
 }
+
+/**
+ * 分页响应。字段与后端 `PageResponse` 一一对应。
+ *
+ * <h2>为什么它在这里，而不是在某个业务模块里</h2>
+ * 社区的帖子列表、空间的成员/笔记/文档列表用的是<b>同一个</b>分页形状，
+ * 由后端同一个 `PageResponse` 序列化而来。把它定义在社区模块里、让其他模块
+ * 反向 import，会让"社区换了分页字段"看起来像是只影响社区的一件事。
+ * 通用的形状放在通用的文件里，依赖方向才与事实一致。
+ */
+export interface PageResponse<T> {
+  items: T[]
+  /** 从 1 开始。后端已归一化，前端不需要再判断 0 */
+  page: number
+  /** 实际生效的页大小，可能小于请求值（服务端有上限） */
+  size: number
+  total: number
+  hasNext: boolean
+}
