@@ -129,14 +129,15 @@ class WorkspaceActionTest {
         }
 
         @Test
-        @DisplayName("拥有者与管理员可以删任何一条 —— '收拾烂摊子'正是这个角色的职责")
-        void ownerAndAdminDeleteAny() {
+        @DisplayName("拥有者与管理员可以处理任何一条 —— '收拾烂摊子'正是这个角色的职责")
+        void ownerAndAdminActOnAnybodysResources() {
             for (WorkspaceRoleInContext role : new WorkspaceRoleInContext[]{
                     WorkspaceRoleInContext.OWNER, WorkspaceRoleInContext.ADMIN}) {
                 for (WorkspaceAction action : new WorkspaceAction[]{
-                        WorkspaceAction.DELETE_NOTE, WorkspaceAction.DELETE_DOCUMENT}) {
+                        WorkspaceAction.DELETE_NOTE, WorkspaceAction.DELETE_DOCUMENT,
+                        WorkspaceAction.RETRY_DOCUMENT_PARSE}) {
                     assertThat(action.allows(role, false))
-                            .as("%s 对 %s 删除他人内容", role, action)
+                            .as("%s 对 %s 处理他人内容", role, action)
                             .isTrue();
                 }
             }
@@ -158,14 +159,21 @@ class WorkspaceActionTest {
         }
 
         @Test
-        @DisplayName("只有删除类动作是归属敏感的")
-        void onlyDeleteActionsAreOwnershipSensitive() {
+        @DisplayName("归属敏感的动作恰好是这两个删除动作与重新解析")
+        void ownershipSensitiveActionsAreExactlyTheExpectedOnes() {
+            // 这个断言**必须逐个列出**，而不能写成"所有名字里带 DELETE 的动作"：
+            // 后者在新增一个不叫 DELETE 但同样看归属的动作（Phase 05 的
+            // RETRY_DOCUMENT_PARSE 就是这样一个）时会继续通过，
+            // 于是"哪些动作看归属"这件事重新变成没人知道的。
             assertThat(java.util.Arrays.stream(WorkspaceAction.values())
                     .filter(WorkspaceAction::isOwnershipSensitive)
                     .toList())
                     .containsExactlyInAnyOrder(
                             WorkspaceAction.DELETE_NOTE,
-                            WorkspaceAction.DELETE_DOCUMENT);
+                            WorkspaceAction.DELETE_DOCUMENT,
+                            // 重新解析会**替换这份文档现有的可检索内容**，
+                            // 因此普通成员只能重试自己上传的；拥有者与管理员可以处理任何一条。
+                            WorkspaceAction.RETRY_DOCUMENT_PARSE);
         }
 
         @Test

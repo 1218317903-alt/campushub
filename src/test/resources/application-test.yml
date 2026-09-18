@@ -38,15 +38,41 @@ app:
       # 长度 ≥ 32 字节是 HS256 的硬要求（256 bit）。
       secret: test-only-jwt-secret-for-camphub-integration-tests-0123456789
   workspace:
-    documents:
+    storage:
+      # 测试期强制用本地后端：集成测试不应该要求一个外部的对象存储服务。
+      # s3 那条路径由独立的容器化测试（S3ObjectStorageIT，自己起 MinIO）覆盖 ——
+      # 那才是它该被验证的地方，而不是让每一个碰文档的测试都拖上一台 MinIO。
+      backend: local
       # 测试期的文档字节写到系统临时目录，**不落在仓库里**。
       # 理由有两条：
       #   1) 上传测试会真的写文件，写在 ./data 下会让工作区多出一批未被忽略的产物；
       #   2) 存储目录由配置决定，因此把它指到别处本身就是对
-      #      "storage-dir 这项配置真的生效"的一次验证。
+      #      "storage.local-dir 这项配置真的生效"的一次验证。
       # 用 ${java.io.tmpdir} 而不是硬编码 /tmp：占位符从 Environment 解析，
       # 因此它在 macOS 与 Linux 上都指向该平台的临时目录（Windows 可移植性预留）。
-      storage-dir: ${java.io.tmpdir}/camphub-test-documents
+      local-dir: ${java.io.tmpdir}/camphub-test-documents
+    worker:
+      # **测试期关掉轮询 worker**。这是一条纪律而不是省事：
+      # 调度器会在任意时刻领走任务，于是"上传之后文档是什么状态"取决于
+      # 机器快慢与运气 —— 这类不稳定会以"单跑通过、全量偶发失败"的形式出现，
+      # 而它消耗的排查时间远超过这里省下的那点。
+      # 需要驱动解析的测试自己调用 DocumentTaskProcessor，因此"哪一次解析真的发生了"
+      # 完全由测试决定。
+      enabled: false
+      # 下面几项在 worker 被关掉时不会生效，但仍然显式写出：
+      # ApplicationConfigStructureTest 断言这些键存在，而"测试 profile 覆盖了它们"
+      # 是一种额外的说明 —— 它们与主配置的差异是有意的（测试不需要 3 秒的轮询节奏）。
+      poll-interval-ms: 60000
+      lease-seconds: 30
+    parsing:
+      # 测试用更小的分块上界，让两三行文本就能产生多个块，
+      # 而不必在测试里塞进一份几千字的样本（那种样本没人会去读它断言了什么）。
+      chunk-max-chars: 100
+      # 行数/字符数上限在解析器单元测试里另有构造参数，
+      # 这里只保证配置项存在且量级合理。
+      max-pages: 50
+      max-text-chars: 100000
+      memory-bytes: 4194304
 
 logging:
   level:
