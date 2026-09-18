@@ -229,6 +229,9 @@ public class SecurityConfig {
 
         OAuth2TokenValidator<Jwt> requiredClaimsPresence = jwt -> {
             List<OAuth2Error> errors = new ArrayList<>();
+            if (jwt.getExpiresAt() == null) {
+                errors.add(new OAuth2Error("invalid_token", "访问令牌缺少 exp 声明", null));
+            }
             if (jwt.getClaim(JwtTokenService.CLAIM_UID) == null) {
                 errors.add(new OAuth2Error("invalid_token", "访问令牌缺少 uid 声明", null));
             }

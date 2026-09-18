@@ -46,8 +46,7 @@
         WHERE id = #{id}
     </select>
 
-    <!-- 取最近一条：一次性令牌被重复使用时，可能存在多条后继（例如并发竞态下各开了一条链）。
-         按 id 倒序取最新的一条来判断"这是不是刚刚发生的正常并发"。 -->
+    <!-- 正常轮换只允许一个后继；倒序兼容修复前可能已产生的历史分叉。 -->
     <select id="findLatestByRotatedFrom" resultMap="RefreshTokenMap">
         SELECT <include refid="tokenColumns"/>
         FROM refresh_token

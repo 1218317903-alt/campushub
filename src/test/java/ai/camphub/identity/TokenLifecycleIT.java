@@ -7,6 +7,9 @@ import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.DisplayName;
@@ -151,6 +154,55 @@ class TokenLifecycleIT extends IdentityTestSupport {
         assertThat(tokenVersion).isEqualTo(1);
         assertThat(getWithToken("/api/v1/users/me", rotated.access(), fromIp(ip)).statusCode()).isEqualTo(200);
         assertThat(auditCount(userId, "AUTH_TOKEN_REPLAY_DETECTED")).isZero();
+    }
+
+    @Test
+    @DisplayName("同一刷新令牌同时提交：仅一个成功，且仅产生一个有效后继")
+    void concurrentRefresh_hasExactlyOneSuccessor() throws Exception {
+        String username = uniqueUsername();
+        String ip = nextIp();
+        Tokens first = registerOk(username, "dev-A", ip);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            java.util.concurrent.Callable<HttpResponse<String>> task = () -> {
+                ready.countDown();
+                if (!start.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("并发刷新未能同时启动");
+                }
+                return refresh(first.refresh(), "dev-A", ip);
+            };
+            var left = executor.submit(task);
+            var right = executor.submit(task);
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var a = left.get(15, TimeUnit.SECONDS);
+            var b = right.get(15, TimeUnit.SECONDS);
+            assertThat(java.util.List.of(a.statusCode(), b.statusCode()))
+                    .containsExactlyInAnyOrder(200, 401);
+            Tokens winner = tokensOf(a.statusCode() == 200 ? a : b);
+            assertThat(activeSessionCount(userIdOf(username))).isEqualTo(1);
+            assertThat(getWithToken("/api/v1/users/me", winner.access(), fromIp(ip)).statusCode())
+                    .isEqualTo(200);
+            assertThat(auditCount(userIdOf(username), "AUTH_TOKEN_REPLAY_DETECTED")).isZero();
+        }
+    }
+
+    @Test
+    @DisplayName("签名有效但缺少过期时间的访问令牌必须拒绝")
+    void accessTokenWithoutExpiration_isRejected() throws Exception {
+        String username = uniqueUsername();
+        registerOk(username, "dev-A", nextIp());
+        String token = encode(JwtClaimsSet.builder()
+                .issuer(securityProperties.jwt().issuer())
+                .subject("self-signed")
+                .issuedAt(Instant.now())
+                .claim("uid", userIdOf(username))
+                .claim("ver", 1)
+                .build());
+        var response = getWithToken("/api/v1/users/me", token, fromIp(nextIp()));
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(json(response).path("code").asInt()).isEqualTo(40102);
     }
 
     @Test

@@ -125,7 +125,12 @@ public class RefreshTokenService {
 
         // 先作废旧令牌再签发新令牌：顺序反过来的话，若签发过程中失败，
         // 用户会同时持有一个已失效的旧令牌和一个未生效的新令牌，直接失去会话
-        refreshTokenMapper.revoke(token.id(), now);
+        // 条件 UPDATE 是一次性令牌的竞争点。只有真正撤销成功的请求可以签发后继；
+        // 普通 SELECT 的快照可能被多个并发事务同时读到，不能据此判断自己赢得了轮换。
+        if (refreshTokenMapper.revoke(token.id(), now) != 1) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID,
+                    "登录状态已被其他请求更新，请使用最新的登录凭据重试");
+        }
         refreshTokenMapper.updateLastUsed(token.id(), now);
 
         IssuedTokens issued = sessionService.createSession(user, deviceLabel, token.id());
