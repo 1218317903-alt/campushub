@@ -127,50 +127,60 @@ public final class DocumentChunker {
     }
 
     /**
-     * 把一个超长段落按句末标点切成若干不超过上界的片段。
+     * 把一个超长段落切成若干不超过上界的片段，优先切在句末标点之后。
      *
-     * <h2>两级切分是必要的</h2>
-     * 先按句子累积；若一段文字里一个句末标点都没有（代码块、长 URL 列表、
-     * 表格被抽平之后的文本都会这样），累积永远不触发，于是必须有一级
-     * <b>硬切</b>兜底。少了兜底那一级，这种段落会以"超过上界的单个块"进入数据库，
-     * 而那正是分块要避免的情形。
+     * <h2>为什么是"窗口内最后一个句末标点"，而不是"累积到超过上界再切"</h2>
+     * 后者是一个看起来等价、实际上不成立的写法：等到累积长度超过上界时，
+     * 那个片段本身<b>已经超过上界</b>，于是它只能再被硬切一次 ——
+     * 句末标点被绕过，切点仍然落在句子中间。结果是这一级"按句子切"永远不起作用，
+     * 而它并不会报错，只是让每个长段落的切点都落在随机位置。
+     *
+     * <p>因此判据改成"在 [起点, 起点+上界) 这个窗口里往回找最后一个句末标点"：
+     * 找到就切在它后面（片段必然不超过上界）；一个都没有才硬切在上界处。
+     * 后者是必要的兜底 —— 代码块、长 URL 列表、被抽平的表格都会是
+     * "一个句末标点都没有的一大段"，少了兜底它们会以"超过上界的单个块"进入数据库。
      *
      * @param paragraph 超长段落
-     * @return 片段列表，每个不超过上界
+     * @return 片段列表，每个不超过上界且非空
      */
     private List<String> splitOversized(String paragraph) {
         List<String> pieces = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        for (int i = 0; i < paragraph.length(); i++) {
-            char c = paragraph.charAt(i);
-            current.append(c);
-            if (SENTENCE_ENDS.indexOf(c) >= 0 && current.length() >= maxChunkChars) {
-                pieces.add(current.toString().strip());
-                current.setLength(0);
+        int start = 0;
+        while (start < paragraph.length()) {
+            int windowEnd = Math.min(start + maxChunkChars, paragraph.length());
+            if (windowEnd == paragraph.length()) {
+                // 剩余部分装得下，直接收尾 —— 它可能比上界短，这正是"装箱"允许的波动。
+                pieces.add(paragraph.substring(start));
+                break;
             }
+            int cut = lastSentenceEndWithin(paragraph, start, windowEnd);
+            pieces.add(paragraph.substring(start, cut));
+            start = cut;
         }
-        String tail = current.toString().strip();
-        if (!tail.isEmpty()) {
-            pieces.add(tail);
-        }
+        return pieces.stream()
+                .map(String::strip)
+                .filter(piece -> !piece.isEmpty())
+                .toList();
+    }
 
-        List<String> result = new ArrayList<>(pieces.size());
-        for (String piece : pieces) {
-            if (piece.isEmpty()) {
-                continue;
-            }
-            if (piece.length() <= maxChunkChars) {
-                result.add(piece);
-                continue;
-            }
-            for (int start = 0; start < piece.length(); start += maxChunkChars) {
-                String slice = piece.substring(start, Math.min(start + maxChunkChars, piece.length()));
-                if (!slice.isEmpty()) {
-                    result.add(slice);
-                }
+    /**
+     * 在 {@code [start, windowEnd)} 内找最后一个句末标点的下一个位置。
+     *
+     * <p>从窗口末尾往回找，因此得到的切点<b>尽可能靠后</b> ——
+     * 块要尽量装满，否则一个以短句为主的段落会被切成许多只有几个字的块。
+     *
+     * @param text      段落全文
+     * @param start     起点（含）
+     * @param windowEnd 窗口末尾（不含）
+     * @return 切点（必然大于 {@code start}）；窗口内没有句末标点时返回 {@code windowEnd}
+     */
+    private static int lastSentenceEndWithin(String text, int start, int windowEnd) {
+        for (int index = windowEnd - 1; index >= start; index--) {
+            if (SENTENCE_ENDS.indexOf(text.charAt(index)) >= 0) {
+                return index + 1;
             }
         }
-        return result;
+        return windowEnd;
     }
 
     /**

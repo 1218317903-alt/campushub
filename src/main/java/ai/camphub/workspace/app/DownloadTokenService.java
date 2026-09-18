@@ -129,8 +129,8 @@ public class DownloadTokenService {
         if (separator <= 0 || separator == token.length() - 1) {
             return Optional.empty();
         }
-        Optional<String> payload = decode(token.substring(0, separator));
-        Optional<String> signature = decode(token.substring(separator + 1));
+        Optional<String> payload = decodeText(token.substring(0, separator));
+        Optional<byte[]> signature = decodeBytes(token.substring(separator + 1));
         if (payload.isEmpty() || signature.isEmpty()) {
             return Optional.empty();
         }
@@ -141,8 +141,13 @@ public class DownloadTokenService {
         // 比较用 MessageDigest.isEqual 而不是 Arrays.equals：后者一旦遇到第一个
         // 不同的字节就返回，比较耗时会随"前缀匹配了多少"变化 ——
         // 那是一个能被用来逐字节猜签名的旁路。isEqual 是常量时间的。
+        //
+        // ⚠️ 这里比较的是**字节**，不是字符串。签名是二进制，把它解码成文本再比较
+        // 会让比较永远失败：真正的 HMAC 输出必然包含非法的 UTF-8 序列，
+        // 解码时被替换成 U+FFFD，再编码回去就与原文不同了。
+        // 这个错误曾经真实存在于这里，而它的表现是"所有下载链接一律 40024"。
         byte[] expected = sign(payload.get());
-        if (!MessageDigest.isEqual(expected, signature.get().getBytes(StandardCharsets.US_ASCII))) {
+        if (!MessageDigest.isEqual(expected, signature.get())) {
             return Optional.empty();
         }
 
@@ -248,10 +253,22 @@ public class DownloadTokenService {
      * @param value 编码字符串
      * @return 解码结果；格式非法时为空
      */
-    private static Optional<String> decode(String value) {
+    private static Optional<String> decodeText(String value) {
+        return decodeBytes(value).map(bytes -> new String(bytes, StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 解码 URL 安全 base64 为原始字节。
+     *
+     * <p>签名必须按字节取用，不能经过一次字符串往返 —— 理由见 {@link #verify}：
+     * 那个往返会让校验<b>永远失败</b>，而失败的表现是"所有下载链接都打不开"。
+     *
+     * @param value 编码字符串
+     * @return 解码结果；格式非法时为空
+     */
+    private static Optional<byte[]> decodeBytes(String value) {
         try {
-            byte[] decoded = Base64.getUrlDecoder().decode(value);
-            return Optional.of(new String(decoded, StandardCharsets.UTF_8));
+            return Optional.of(Base64.getUrlDecoder().decode(value));
         } catch (IllegalArgumentException ex) {
             return Optional.empty();
         }
