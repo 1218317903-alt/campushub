@@ -337,6 +337,15 @@ CampusHubAI/
 | [docs/11-开发环境.md](docs/11-开发环境.md) | 本机实测环境、依赖版本基线、故障排查 |
 | [docs/adr/](docs/adr/) | 架构决策记录（ADR） |
 
+### 阶段交付报告（§17 十一节模板）
+
+| 报告 | 内容 |
+|---|---|
+| [phase-01-03-quality-review.md](docs/reports/phase-01-03-quality-review.md) | Phase 01–03 阶段末的质量复查（发现的缺陷与修复） |
+| [phase-03-delivery.md](docs/reports/phase-03-delivery.md) | Phase 03 · Community MVP & Bootstrap |
+| [phase-04-delivery.md](docs/reports/phase-04-delivery.md) | Phase 04 · Workspace & Resource Authorization（三层防线） |
+| [phase-05-delivery.md](docs/reports/phase-05-delivery.md) | Phase 05 · Object Storage & Document Workflow（任务队列 · 解析分块 · 下载令牌） |
+
 ### ADR
 
 | 编号 | 决策 |
