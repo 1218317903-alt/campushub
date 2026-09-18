@@ -933,6 +933,7 @@ node scripts/bench/query-baseline.mjs --username demo01 --password '<演示口�
 | 社区无审核能力 | 任何登录用户可发布任意内容 | Phase 10 审核域 |
 | 社区无内容删除率数据 | 索引刻意不带 `deleted_at` 条件（见 §7） | 删除率真实升高到影响扫描量时再调整索引 |
 | 文档无配额，也无孤儿对象回收 | 删除文档会清分块与字节（见 [document-pipeline.md](document-pipeline.md) §7），但没有上传量上限；被外部删掉的对象不会被回收 | 出现真实容量压力时用对象存储的生命周期规则 + 对账任务处理 |
+| `document_task` 的时间戳由**两处**写入 | `insertIfAbsent` 用列默认值 `CURRENT_TIMESTAMP(3)`（会话时区），`reschedule`/`resetForRetry`/`markRunning` 用应用传入的 `Instant`（连接时区）；两者靠连接时区对齐 | 生产与测试都已显式钉住 `connectionTimeZone=Asia/Shanghai` + `forceConnectionTimeZoneToSession=true`，因此自洽。**但这是一处"配置写错就静默失效"的地方**：时区不一致时领取语句 `next_attempt_at <= ?` 恒不成立，一份文档都不会被解析（v0.5.2 的真实故障，CI 上才暴露）。彻底消除要把队列时间全部改由数据库计算（`CURRENT_TIMESTAMP(3)` + `INTERVAL ? SECOND`），使应用时钟不再参与 —— 在有第二个消费者或第二次踩坑时做 |
 | 解析吞吐靠单实例轮询 | 批 5 / 3 秒 = 约 1.7 任务/秒，且轮询间隔就是延迟下限 | Phase 09 压测后调 `batch-size` / `poll-interval-ms`，或换 MQ（判据写在 document-pipeline.md §3） |
 | 不支持 OCR | 扫描件 PDF 抽不出文字，会以 FAILED 收尾 | 出现真实需求时单独立项（需要额外运行时与算力预算） |
 | 分块无重叠、无向量嵌入 | 只按标题与字符数切分 | Phase 07 接检索时按召回效果调参（重叠是那时的参数，不是现在的） |
