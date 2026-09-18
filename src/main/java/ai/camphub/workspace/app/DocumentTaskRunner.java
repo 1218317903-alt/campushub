@@ -201,7 +201,7 @@ public class DocumentTaskRunner {
     }
 
     /**
-     * 清理完成：置空存储键并把任务标记成功。
+     * 清理完成：清掉分块、置空存储键，并把任务标记成功。
      *
      * <h2>顺序不能颠倒</h2>
      * 先删字节、再置空键。反过来的话，一旦置空成功而删除失败，
@@ -209,11 +209,20 @@ public class DocumentTaskRunner {
      * 而所有记录都显示清理已完成。当前顺序下最坏的结果是"字节已删、键还在"，
      * 而重试会在一个已经不存在的对象上再来一次删除（幂等，无害）。
      *
+     * <h2>为什么分块也在这里删</h2>
+     * 文档的删除是软删除，而行还在，因此外键的 {@code ON DELETE CASCADE} 不会触发 ——
+     * 分块必须被显式清掉。留着它们的后果是：一份"已删除"的文档，它的内容仍然
+     * 完整地躺在分块表里，而"读不到"这件事只能靠每个查询都记得 JOIN 一次
+     * {@code document} 并过滤 {@code deleted_at} 来保证。
+     * <b>把一处遗漏的后果交给调用方去记得，不是一个可接受的设计</b>；
+     * 在这里删掉，让"删除"在数据上就是完整的。
+     *
      * @param task 任务
      * @throws LeaseLostException 租约已失效
      */
     @Transactional
     public void completeCleanup(DocumentTask task) {
+        chunkMapper.deleteByDocument(task.documentId());
         documentMapper.clearStorageKey(task.documentId());
         int updated = taskMapper.markSucceeded(task.id(), task.leaseOwner(), clock.instant());
         if (updated != 1) {
