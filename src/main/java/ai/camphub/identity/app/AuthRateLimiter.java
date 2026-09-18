@@ -7,8 +7,8 @@ import ai.camphub.identity.config.SecurityProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -49,14 +49,14 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 public class AuthRateLimiter {
 
     /**
-     * 键数量上限。达到上限时清理已过期的窗口。
+     * 键数量硬上限。达到上限时清理已过期窗口，仍满则拒绝新来源。
      *
      * <p>没有这条限制，攻击者用大量伪造来源 IP 就能把内存撑大 ——
      * 一个防滥用的组件本身变成内存耗尽的入口，是很典型的反噬。
      */
     private static final int MAX_TRACKED_KEYS = 10_000;
 
-    private final Map<String, Window> windows = new ConcurrentHashMap<>();
+    private final Map<String, Window> windows = new HashMap<>();
     private final boolean trustForwardedHeaders;
     private final Clock clock;
     private final SecurityProperties securityProperties;
@@ -114,40 +114,26 @@ public class AuthRateLimiter {
         long windowMillis = rule.window().toMillis();
         long now = clock.millis();
 
-        evictExpiredIfCrowded(now, windowMillis);
-
-        Window window = windows.compute(key, (ignored, existing) -> {
-            if (existing == null || now - existing.startMillis >= windowMillis) {
-                return new Window(now);
+        // 准入与计数共用短临界区，使容量限制在多来源并发下仍然成立。
+        // 临界区不执行 I/O；每个窗口保存自己的到期时间，不能用当前桶的时长清理别的桶。
+        synchronized (windows) {
+            Window window = windows.get(key);
+            if (window == null || now >= window.expiresAtMillis) {
+                if (window == null && windows.size() >= MAX_TRACKED_KEYS) {
+                    windows.values().removeIf(value -> now >= value.expiresAtMillis);
+                    if (windows.size() >= MAX_TRACKED_KEYS) {
+                        throw new RateLimitedException(Duration.ofMillis(windowMillis));
+                    }
+                }
+                window = new Window(now + windowMillis);
+                windows.put(key, window);
             }
-            return existing;
-        });
-
-        long retryAfterMillis;
-        synchronized (window) {
             if (window.count < rule.capacity()) {
                 window.count++;
                 return;
             }
-            retryAfterMillis = windowMillis - (now - window.startMillis);
+            throw new RateLimitedException(Duration.ofMillis(Math.max(1, window.expiresAtMillis - now)));
         }
-        throw new RateLimitedException(Duration.ofMillis(Math.max(1, retryAfterMillis)));
-    }
-
-    /**
-     * 键数量超限时清理已过期的窗口。
-     *
-     * <p>只在超过阈值时扫描，因此常态下没有额外开销；
-     * 而被扫描的时机恰恰是"正在被大量不同来源访问"，此时清理正是需要的。
-     *
-     * @param now          当前时间
-     * @param windowMillis 当前规则的窗口长度
-     */
-    private void evictExpiredIfCrowded(long now, long windowMillis) {
-        if (windows.size() < MAX_TRACKED_KEYS) {
-            return;
-        }
-        windows.entrySet().removeIf(entry -> now - entry.getValue().startMillis >= windowMillis);
     }
 
     /**
@@ -168,17 +154,17 @@ public class AuthRateLimiter {
      */
     private static final class Window {
 
-        /** 窗口起点。 */
-        private final long startMillis;
+        /** 窗口到期时间。 */
+        private final long expiresAtMillis;
 
         /** 窗口内已消耗的额度。 */
         private int count;
 
         /**
-         * @param startMillis 窗口起点
+         * @param expiresAtMillis 窗口到期时间
          */
-        private Window(long startMillis) {
-            this.startMillis = startMillis;
+        private Window(long expiresAtMillis) {
+            this.expiresAtMillis = expiresAtMillis;
         }
     }
 }
